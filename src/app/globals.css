@@ -1,0 +1,244 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #f4f6f8;
+  --bg-elevated: #ffffff;
+  --ink: #0f1a22;
+  --ink-muted: #3d4f5c;
+  --line: #c8d3db;
+  --accent: #0a5f5f;
+  --accent-soft: #e6f2f1;
+  --gain: #0a6b4a;
+  --loss: #b3261e;
+  --warn: #9a3412;
+  --radius: 16px;
+  --shadow: 0 1px 2px rgba(15, 26, 34, 0.05), 0 10px 28px rgba(15, 26, 34, 0.07);
+  --font-size-body: 1.125rem; /* 18px */
+  --touch: 3rem; /* 48px */
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-elevated: var(--bg-elevated);
+  --color-ink: var(--ink);
+  --color-muted: var(--ink-muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-gain: var(--gain);
+  --color-loss: var(--loss);
+  --color-warn: var(--warn);
+  --font-sans: var(--font-dm-sans);
+  --font-display: var(--font-fraunces);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-size: var(--font-size-body);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.gain {
+  color: var(--gain);
+}
+
+.loss {
+  color: var(--loss);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 999px;
+  min-height: var(--touch);
+  padding: 0.75rem 1.35rem;
+  font-weight: 650;
+  font-size: 1.05rem;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: transform 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+
+.btn:active {
+  transform: scale(0.98);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #084848;
+}
+
+.btn-ghost {
+  background: #fff;
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.btn-lg {
+  min-height: 3.25rem;
+  padding: 0.9rem 1.5rem;
+  font-size: 1.125rem;
+}
+
+.input,
+.select,
+.textarea {
+  width: 100%;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  min-height: var(--touch);
+  padding: 0.85rem 1rem;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 1.125rem;
+}
+
+.textarea {
+  min-height: 6rem;
+}
+
+.input:focus,
+.select:focus,
+.textarea:focus {
+  outline: 3px solid rgba(10, 95, 95, 0.28);
+  border-color: var(--accent);
+}
+
+.label {
+  display: block;
+  font-size: 1rem;
+  font-weight: 650;
+  color: var(--ink);
+  margin-bottom: 0.45rem;
+}
+
+.help {
+  margin-top: 0.4rem;
+  font-size: 0.95rem;
+  color: var(--ink-muted);
+  line-height: 1.45;
+}
+
+.table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+table.data {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 1.05rem;
+}
+
+table.data th {
+  text-align: left;
+  font-size: 0.95rem;
+  font-weight: 650;
+  color: var(--ink-muted);
+  padding: 0.9rem 1rem;
+  border-bottom: 2px solid var(--line);
+}
+
+table.data td {
+  padding: 1rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+table.data tr:last-child td {
+  border-bottom: none;
+}
+
+.tone-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border-radius: 999px;
+  padding: 0.25rem 0.7rem;
+  font-size: 0.95rem;
+  font-weight: 650;
+}
+
+.tone-badge.up {
+  background: #e4f6ef;
+  color: var(--gain);
+}
+
+.tone-badge.down {
+  background: #fdecea;
+  color: var(--loss);
+}
+
+.step-dots {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.step-dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.step-dot.active {
+  width: 1.5rem;
+  background: var(--accent);
+}
+
+.page-shell {
+  padding-bottom: 1.5rem;
+}
+
+/* Mobile bottom nav spacing */
+@media (max-width: 768px) {
+  .page-shell {
+    padding-bottom: 6.75rem;
+  }
+}

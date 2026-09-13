@@ -1,0 +1,151 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Member {
+  id          String      @id @default(cuid())
+  name        String
+  contactInfo String?
+  notes       String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  portfolios  Portfolio[]
+}
+
+model Portfolio {
+  id              String                    @id @default(cuid())
+  memberId        String
+  member          Member                    @relation(fields: [memberId], references: [id], onDelete: Cascade)
+  name            String
+  type            String                    @default("demat")
+  currency        String                    @default("INR")
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+  trades          Trade[]
+  lots            Lot[]
+  realizedGains   RealizedGain[]
+  valueSnapshots  PortfolioValueSnapshot[]
+  tradeAudits     TradeAuditLog[]
+}
+
+model Trade {
+  id             String          @id @default(cuid())
+  portfolioId    String
+  portfolio      Portfolio       @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  ticker         String
+  action         String // BUY | SELL
+  instrumentType String          @default("EQUITY") // EQUITY | FUTURES
+  quantity       Float
+  pricePerShare  Float
+  fees           Float           @default(0)
+  executedAt     DateTime
+  notes          String?
+  deletedAt      DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  openLots       Lot[]           @relation("OpenTrade")
+  closedGains    RealizedGain[]  @relation("CloseTrade")
+  audits         TradeAuditLog[]
+
+  @@index([portfolioId, ticker])
+  @@index([executedAt])
+}
+
+model TradeAuditLog {
+  id          String    @id @default(cuid())
+  tradeId     String?
+  trade       Trade?    @relation(fields: [tradeId], references: [id], onDelete: SetNull)
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  action      String // CREATE | UPDATE | SOFT_DELETE | RESTORE
+  snapshot    String // JSON of trade state
+  createdAt   DateTime  @default(now())
+}
+
+model Lot {
+  id                 String         @id @default(cuid())
+  portfolioId        String
+  portfolio          Portfolio      @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  ticker             String
+  openTradeId        String
+  openTrade          Trade          @relation("OpenTrade", fields: [openTradeId], references: [id])
+  quantityRemaining  Float
+  costBasisPerShare  Float
+  acquiredAt         DateTime
+  createdAt          DateTime       @default(now())
+  realizedGains      RealizedGain[]
+
+  @@index([portfolioId, ticker])
+}
+
+model RealizedGain {
+  id            String    @id @default(cuid())
+  portfolioId   String
+  portfolio     Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  ticker        String
+  lotId         String
+  lot           Lot       @relation(fields: [lotId], references: [id])
+  closeTradeId  String
+  closeTrade    Trade     @relation("CloseTrade", fields: [closeTradeId], references: [id])
+  quantity      Float
+  proceeds      Float
+  costBasis     Float
+  gainLoss      Float
+  term          String // STCG | LTCG
+  financialYear String
+  closedAt      DateTime
+  createdAt     DateTime  @default(now())
+
+  @@index([portfolioId, financialYear])
+  @@index([term])
+}
+
+model TaxSettings {
+  id                        String   @id @default(cuid())
+  jurisdiction              String   @default("IN")
+  stcgRatePct               Float    @default(20)
+  ltcgRatePct               Float    @default(12.5)
+  ltcgExemptionAmountPerFY  Float    @default(125000)
+  longTermThresholdDays     Int      @default(365)
+  effectiveFrom             DateTime @default(now())
+  createdAt                 DateTime @default(now())
+}
+
+model PriceSnapshot {
+  ticker        String   @id
+  price         Float
+  dayChange     Float    @default(0)
+  dayChangePct  Float    @default(0)
+  currency      String   @default("INR")
+  fetchedAt     DateTime
+  stale         Boolean  @default(false)
+}
+
+model PortfolioValueSnapshot {
+  id             String    @id @default(cuid())
+  portfolioId    String
+  portfolio      Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  date           DateTime
+  totalValue     Float
+  totalCostBasis Float
+  realizedPl     Float     @default(0)
+
+  @@unique([portfolioId, date])
+  @@index([portfolioId, date])
+}
+
+model TechnicalInsight {
+  id          String   @id @default(cuid())
+  ticker      String
+  timeframe   String // DAILY | WEEKLY
+  levels      String // JSON
+  aiNarrative String?
+  generatedAt DateTime
+
+  @@unique([ticker, timeframe])
+}
