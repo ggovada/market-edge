@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Trade" ADD COLUMN     "lotSize" DOUBLE PRECISION NOT NULL DEFAULT 1;

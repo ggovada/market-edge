@@ -12,6 +12,9 @@ type MemberRow = {
   contactInfo?: string | null;
   summary: {
     currentValue: number;
+    holdingsValue?: number;
+    cashBalance?: number;
+    netDeposits?: number;
     totalInvested: number;
     totalPl: number;
     dayChange: number;
@@ -23,6 +26,8 @@ type MemberRow = {
     type: string;
     metrics: {
       currentValue: number;
+      holdingsValue?: number;
+      cashBalance?: number;
       totalPl: number;
       dayChange: number;
       unrealizedPlPct: number;
@@ -120,23 +125,36 @@ export default function DashboardPage() {
     return <div className="text-lg text-muted">Loading…</div>;
   }
 
-  const overallInvested = data.members.reduce(
-    (s, m) => s + m.summary.totalInvested,
-    0
-  );
+  const overallInvested = data.members.reduce((s, m) => {
+    const cap =
+      (m.summary.netDeposits ?? 0) > 0
+        ? m.summary.netDeposits!
+        : m.summary.totalInvested;
+    return s + cap;
+  }, 0);
 
   const viewStats = selectedMember
     ? {
         aum: selectedMember.summary.currentValue,
         pl: selectedMember.summary.totalPl,
         day: selectedMember.summary.dayChange,
-        invested: selectedMember.summary.totalInvested,
+        invested:
+          (selectedMember.summary.netDeposits ?? 0) > 0
+            ? selectedMember.summary.netDeposits!
+            : selectedMember.summary.totalInvested,
+        cash: selectedMember.summary.cashBalance ?? 0,
+        holdings: selectedMember.summary.holdingsValue,
       }
     : {
         aum: data.aggregate.aum,
         pl: data.aggregate.combinedPl,
         day: data.aggregate.combinedDay,
         invested: overallInvested,
+        cash: data.members.reduce((s, m) => s + (m.summary.cashBalance ?? 0), 0),
+        holdings: data.members.reduce(
+          (s, m) => s + (m.summary.holdingsValue ?? m.summary.currentValue),
+          0
+        ),
       };
 
   return (
@@ -230,10 +248,12 @@ export default function DashboardPage() {
               </span>
             </button>
             {filtered.map((m) => {
+              const capital =
+                (m.summary.netDeposits ?? 0) > 0
+                  ? m.summary.netDeposits!
+                  : m.summary.totalInvested;
               const retPct =
-                m.summary.totalInvested > 0
-                  ? (m.summary.totalPl / m.summary.totalInvested) * 100
-                  : 0;
+                capital > 0 ? (m.summary.totalPl / capital) * 100 : 0;
               return (
                 <button
                   key={m.id}
@@ -284,6 +304,11 @@ export default function DashboardPage() {
             <p className="mt-2 font-[family-name:var(--font-display)] text-4xl font-semibold tracking-tight md:text-5xl">
               {formatINR(viewStats.aum)}
             </p>
+            <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-base text-muted">
+              <span>Holdings {formatINR(viewStats.holdings ?? 0, true)}</span>
+              <span aria-hidden>·</span>
+              <span>Cash {formatINR(viewStats.cash, true)}</span>
+            </div>
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <ChangeBadge value={viewStats.day} asMoney />
               <span className="text-base text-muted">today</span>

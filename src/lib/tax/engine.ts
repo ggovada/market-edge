@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db";
+import { contractMultiplier } from "@/lib/market/contract";
 import { daysBetween, getFinancialYear, normalizeTicker } from "@/lib/utils";
 
 export type TaxConfig = {
@@ -63,6 +64,9 @@ export async function rebuildPortfolioLots(portfolioId: string) {
     quantityRemaining: number;
     costBasisPerShare: number;
     acquiredAt: Date;
+    instrumentType: string;
+    lotSize: number;
+    marginRemaining: number;
   };
   const queues = new Map<string, OpenLot[]>();
 
@@ -70,17 +74,24 @@ export async function rebuildPortfolioLots(portfolioId: string) {
     const ticker = normalizeTicker(trade.ticker);
     if (!queues.has(ticker)) queues.set(ticker, []);
     const q = queues.get(ticker)!;
+    const mult = contractMultiplier(trade.instrumentType, trade.lotSize);
 
     if (trade.action === "BUY") {
-      // Allocate fees into cost basis
-      const feePerShare = trade.quantity > 0 ? trade.fees / trade.quantity : 0;
+      // Allocate fees into per-unit cost (unit = share, or 1 underlying for futures)
+      const units = trade.quantity * mult;
+      const feePerUnit = units > 0 ? trade.fees / units : 0;
+      const margin =
+        trade.instrumentType === "FUTURES"
+          ? Math.max(0, trade.margin ?? 0)
+          : 0;
       const lot = await prisma.lot.create({
         data: {
           portfolioId,
           ticker,
           openTradeId: trade.id,
           quantityRemaining: trade.quantity,
-          costBasisPerShare: trade.pricePerShare + feePerShare,
+          costBasisPerShare: trade.pricePerShare + feePerUnit,
+          marginRemaining: margin,
           acquiredAt: trade.executedAt,
         },
       });
@@ -88,25 +99,35 @@ export async function rebuildPortfolioLots(portfolioId: string) {
         id: lot.id,
         openTradeId: trade.id,
         quantityRemaining: trade.quantity,
-        costBasisPerShare: trade.pricePerShare + feePerShare,
+        costBasisPerShare: trade.pricePerShare + feePerUnit,
         acquiredAt: trade.executedAt,
+        instrumentType: trade.instrumentType,
+        lotSize: trade.lotSize ?? 1,
+        marginRemaining: margin,
       });
     } else if (trade.action === "SELL") {
       let remaining = trade.quantity;
-      // Net proceeds after fees
-      const feePerShare = trade.quantity > 0 ? trade.fees / trade.quantity : 0;
-      const netPrice = trade.pricePerShare - feePerShare;
+      const sellUnits = trade.quantity * mult;
+      const feePerUnit = sellUnits > 0 ? trade.fees / sellUnits : 0;
+      const netPrice = trade.pricePerShare - feePerUnit;
 
       while (remaining > 1e-9 && q.length > 0) {
         const lot = q[0];
         const take = Math.min(lot.quantityRemaining, remaining);
-        const proceeds = take * netPrice;
-        const costBasis = take * lot.costBasisPerShare;
+        const lotMult = contractMultiplier(lot.instrumentType, lot.lotSize);
+        // P/L = lots × lotSize × (exit − entry)
+        const proceeds = take * lotMult * netPrice;
+        const costBasis = take * lotMult * lot.costBasisPerShare;
         const gainLoss = proceeds - costBasis;
+        const marginRelease =
+          lot.quantityRemaining > 0
+            ? (take / lot.quantityRemaining) * (lot.marginRemaining ?? 0)
+            : 0;
         const holdingDays = daysBetween(lot.acquiredAt, trade.executedAt);
         // Futures/F&O are not equity LTCG — treat realized futures P/L as STCG for tracking
         const term =
           trade.instrumentType === "FUTURES" ||
+          lot.instrumentType === "FUTURES" ||
           holdingDays <= tax.longTermThresholdDays
             ? "STCG"
             : "LTCG";
@@ -129,18 +150,22 @@ export async function rebuildPortfolioLots(portfolioId: string) {
         });
 
         lot.quantityRemaining -= take;
+        lot.marginRemaining = (lot.marginRemaining ?? 0) - marginRelease;
         remaining -= take;
 
         if (lot.quantityRemaining <= 1e-9) {
           await prisma.lot.update({
             where: { id: lot.id },
-            data: { quantityRemaining: 0 },
+            data: { quantityRemaining: 0, marginRemaining: 0 },
           });
           q.shift();
         } else {
           await prisma.lot.update({
             where: { id: lot.id },
-            data: { quantityRemaining: lot.quantityRemaining },
+            data: {
+              quantityRemaining: lot.quantityRemaining,
+              marginRemaining: Math.max(0, lot.marginRemaining ?? 0),
+            },
           });
         }
       }
@@ -163,8 +188,11 @@ export type HoldingRow = {
   ticker: string;
   instrumentType: "EQUITY" | "FUTURES";
   quantity: number;
+  lotSize: number;
   avgCost: number;
   costBasis: number;
+  /** Futures margin still blocked on open lots */
+  marginBlocked: number;
   lots: {
     id: string;
     quantity: number;
@@ -180,7 +208,9 @@ export async function getHoldings(portfolioId: string): Promise<HoldingRow[]> {
   const tax = await getActiveTaxSettings();
   const lots = await prisma.lot.findMany({
     where: { portfolioId, quantityRemaining: { gt: 0 } },
-    include: { openTrade: { select: { instrumentType: true } } },
+    include: {
+      openTrade: { select: { instrumentType: true, lotSize: true } },
+    },
     orderBy: { acquiredAt: "asc" },
   });
 
@@ -195,19 +225,44 @@ export async function getHoldings(portfolioId: string): Promise<HoldingRow[]> {
 
   for (const [ticker, tickerLots] of byTicker) {
     const quantity = tickerLots.reduce((s, l) => s + l.quantityRemaining, 0);
-    const costBasis = tickerLots.reduce(
-      (s, l) => s + l.quantityRemaining * l.costBasisPerShare,
-      0
-    );
     const isFutures = tickerLots.some(
       (l) => l.openTrade.instrumentType === "FUTURES"
+    );
+    const lotSize = isFutures
+      ? Math.max(
+          1,
+          ...tickerLots.map((l) =>
+            contractMultiplier(l.openTrade.instrumentType, l.openTrade.lotSize)
+          )
+        )
+      : 1;
+    // For mixed lot sizes (rare), cost uses each lot's own multiplier
+    const costBasis = tickerLots.reduce((s, l) => {
+      const m = contractMultiplier(
+        l.openTrade.instrumentType,
+        l.openTrade.lotSize
+      );
+      return s + l.quantityRemaining * m * l.costBasisPerShare;
+    }, 0);
+    const units = tickerLots.reduce((s, l) => {
+      const m = contractMultiplier(
+        l.openTrade.instrumentType,
+        l.openTrade.lotSize
+      );
+      return s + l.quantityRemaining * m;
+    }, 0);
+    const marginBlocked = tickerLots.reduce(
+      (s, l) => s + (l.marginRemaining ?? 0),
+      0
     );
     rows.push({
       ticker,
       instrumentType: isFutures ? "FUTURES" : "EQUITY",
       quantity,
-      avgCost: quantity > 0 ? costBasis / quantity : 0,
+      lotSize: isFutures ? lotSize : 1,
+      avgCost: units > 0 ? costBasis / units : 0,
       costBasis,
+      marginBlocked,
       lots: tickerLots.map((l) => {
         const daysHeld = daysBetween(l.acquiredAt, now);
         const isFut = l.openTrade.instrumentType === "FUTURES";

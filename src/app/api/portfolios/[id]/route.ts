@@ -3,6 +3,8 @@ import { prisma } from "@/lib/db";
 import { getHoldings, getRealizedSummary, getMemberLtcgExemption, getActiveTaxSettings } from "@/lib/tax/engine";
 import { computePortfolioMetrics } from "@/lib/portfolio/metrics";
 import { getCachedQuotes } from "@/lib/market/quotes";
+import { holdingBookValue, notionalValue } from "@/lib/market/contract";
+import { getPortfolioCashBreakdown } from "@/lib/portfolio/cash";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -19,26 +21,55 @@ export async function GET(_req: Request, ctx: Ctx) {
     const quotes = await getCachedQuotes(holdings.map((h) => h.ticker));
     const quoteMap = new Map(quotes.map((q) => [q.ticker, q]));
     const metrics = await computePortfolioMetrics(id);
+    const cash = await getPortfolioCashBreakdown(id);
     const realized = await getRealizedSummary(id);
     const realizedAllTime = await getRealizedSummary(id, "ALL");
     const tax = await getActiveTaxSettings();
     const ltcg = await getMemberLtcgExemption(portfolio.memberId);
 
+    const denom =
+      Math.abs(metrics.currentValue) > 1e-6
+        ? Math.abs(metrics.currentValue)
+        : Math.abs(metrics.holdingsValue);
+
     const holdingsDetailed = holdings.map((h) => {
       const q = quoteMap.get(h.ticker);
       const price = q?.price ?? h.avgCost;
-      const marketValue = h.quantity * price;
-      const unrealized = marketValue - h.costBasis;
+      const marketValue = holdingBookValue({
+        quantity: h.quantity,
+        markPrice: price,
+        costBasis: h.costBasis,
+        avgCost: h.avgCost,
+        instrumentType: h.instrumentType,
+        lotSize: h.lotSize,
+      });
+      const notional = notionalValue(
+        h.quantity,
+        price,
+        h.instrumentType,
+        h.lotSize
+      );
+      // Futures: marketValue is already unrealized P/L
+      const unrealized =
+        h.instrumentType === "FUTURES" ? marketValue : marketValue - h.costBasis;
       return {
         ...h,
         price,
         marketValue,
+        notional,
         unrealized,
-        unrealizedPct: h.costBasis > 0 ? (unrealized / h.costBasis) * 100 : 0,
+        unrealizedPct:
+          h.instrumentType === "FUTURES"
+            ? h.costBasis > 0
+              ? (unrealized / h.costBasis) * 100
+              : 0
+            : h.costBasis > 0
+              ? (unrealized / h.costBasis) * 100
+              : 0,
         dayChange: q?.dayChange ?? 0,
         dayChangePct: q?.dayChangePct ?? 0,
         quoteFetchedAt: q?.fetchedAt ?? null,
-        weightPct: metrics.currentValue > 0 ? (marketValue / metrics.currentValue) * 100 : 0,
+        weightPct: denom > 0 ? (marketValue / denom) * 100 : 0,
       };
     });
 
@@ -63,6 +94,7 @@ export async function GET(_req: Request, ctx: Ctx) {
     return NextResponse.json({
       portfolio,
       metrics,
+      cash,
       holdings: holdingsDetailed,
       realized,
       realizedAllTime,

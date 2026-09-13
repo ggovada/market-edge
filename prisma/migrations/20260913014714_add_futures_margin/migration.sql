@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "Lot" ADD COLUMN     "marginRemaining" DOUBLE PRECISION NOT NULL DEFAULT 0;
+
+-- AlterTable
+ALTER TABLE "Trade" ADD COLUMN     "margin" DOUBLE PRECISION NOT NULL DEFAULT 0;

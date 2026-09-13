@@ -19,6 +19,10 @@ type PortfolioPayload = {
   };
   metrics: {
     totalInvested: number;
+    holdingsValue?: number;
+    cashBalance?: number;
+    marginBlocked?: number;
+    netDeposits?: number;
     currentValue: number;
     unrealizedPl: number;
     unrealizedPlPct: number;
@@ -27,14 +31,29 @@ type PortfolioPayload = {
     dayChange: number;
     dayChangePct: number;
   };
+  cash?: {
+    cashBalance: number;
+    netDeposits: number;
+    deposits: number;
+    withdrawals: number;
+    transactions: {
+      id: string;
+      type: string;
+      amount: number;
+      executedAt: string;
+      notes?: string | null;
+    }[];
+  };
   holdings: {
     ticker: string;
     instrumentType?: "EQUITY" | "FUTURES";
     quantity: number;
+    lotSize?: number;
     avgCost: number;
     costBasis: number;
     price: number;
     marketValue: number;
+    notional?: number;
     unrealized: number;
     unrealizedPct: number;
     dayChangePct: number;
@@ -67,6 +86,8 @@ type PortfolioPayload = {
     action: "BUY" | "SELL";
     instrumentType?: "EQUITY" | "FUTURES";
     quantity: number;
+    lotSize?: number;
+    margin?: number;
     pricePerShare: number;
     fees: number;
     executedAt: string;
@@ -90,11 +111,21 @@ export default function PortfolioPage({
   const { id } = use(params);
   const router = useRouter();
   const [data, setData] = useState<PortfolioPayload | null>(null);
-  const [tab, setTab] = useState<"holdings" | "trades" | "lots" | "gains">("holdings");
+  const [tab, setTab] = useState<"holdings" | "trades" | "lots" | "gains" | "cash">(
+    "holdings"
+  );
   const [tradeOpen, setTradeOpen] = useState(false);
   const [editTrade, setEditTrade] = useState<PortfolioPayload["trades"][0] | null>(null);
   const [lotTicker, setLotTicker] = useState<string | null>(null);
   const [showTaxDetails, setShowTaxDetails] = useState(false);
+  const [cashAmount, setCashAmount] = useState("");
+  const [cashNotes, setCashNotes] = useState("");
+  const [cashDate, setCashDate] = useState(
+    () => new Date().toISOString().slice(0, 10)
+  );
+  const [cashType, setCashType] = useState<"DEPOSIT" | "WITHDRAWAL">("DEPOSIT");
+  const [editCashId, setEditCashId] = useState<string | null>(null);
+  const [cashSaving, setCashSaving] = useState(false);
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/portfolios/${id}`);
@@ -176,9 +207,75 @@ export default function PortfolioPage({
     });
   }
 
+  function resetCashForm() {
+    setEditCashId(null);
+    setCashAmount("");
+    setCashNotes("");
+    setCashDate(new Date().toISOString().slice(0, 10));
+    setCashType("DEPOSIT");
+  }
+
+  function startEditCash(t: NonNullable<PortfolioPayload["cash"]>["transactions"][0]) {
+    setEditCashId(t.id);
+    setCashAmount(String(t.amount));
+    setCashNotes(t.notes ?? "");
+    setCashDate(new Date(t.executedAt).toISOString().slice(0, 10));
+    setCashType(t.type === "WITHDRAWAL" ? "WITHDRAWAL" : "DEPOSIT");
+    setTab("cash");
+    setShowTaxDetails(false);
+  }
+
+  async function submitCash(typeOverride?: "DEPOSIT" | "WITHDRAWAL") {
+    const amount = Number(cashAmount);
+    if (!(amount > 0)) {
+      alert("Enter an amount greater than zero.");
+      return;
+    }
+    if (!cashDate) {
+      alert("Choose a date.");
+      return;
+    }
+    const type = typeOverride ?? cashType;
+    setCashSaving(true);
+    try {
+      const executedAt = new Date(`${cashDate}T12:00:00`).toISOString();
+      const res = await fetch(`/api/portfolios/${id}/cash`, {
+        method: editCashId ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: editCashId ?? undefined,
+          type,
+          amount,
+          notes: cashNotes || undefined,
+          executedAt,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Could not save cash movement");
+        return;
+      }
+      resetCashForm();
+      await load();
+    } finally {
+      setCashSaving(false);
+    }
+  }
+
+  async function removeCashTxn(txnId: string) {
+    if (!confirm("Remove this cash entry?")) return;
+    await fetch(`/api/portfolios/${id}/cash?txnId=${txnId}`, { method: "DELETE" });
+    if (editCashId === txnId) resetCashForm();
+    load();
+  }
+
   if (!data) return <div className="text-lg text-muted">Loading account…</div>;
 
   const { portfolio, metrics } = data;
+  const holdingsValue = metrics.holdingsValue ?? metrics.currentValue;
+  const cashBalance = metrics.cashBalance ?? 0;
+  const marginBlocked = metrics.marginBlocked ?? 0;
+  const netDeposits = metrics.netDeposits ?? 0;
 
   return (
     <div className="space-y-6">
@@ -234,10 +331,25 @@ export default function PortfolioPage({
         <p className="mt-2 font-[family-name:var(--font-display)] text-4xl font-semibold md:text-5xl">
           {formatINR(metrics.currentValue)}
         </p>
-        <div className="mt-5 grid gap-4 border-t-2 border-line pt-5 sm:grid-cols-3">
+        <div className="mt-5 grid gap-4 border-t-2 border-line pt-5 sm:grid-cols-2 lg:grid-cols-4">
+          <div>
+            <p className="text-base text-muted">Holdings</p>
+            <p className="mt-1 text-xl font-semibold">{formatINR(holdingsValue)}</p>
+          </div>
+          <div>
+            <p className="text-base text-muted">Free cash</p>
+            <p className="mt-1 text-xl font-semibold">{formatINR(cashBalance)}</p>
+            {marginBlocked > 0 ? (
+              <p className="mt-1 text-sm text-muted">
+                Margin blocked {formatINR(marginBlocked)}
+              </p>
+            ) : null}
+          </div>
           <div>
             <p className="text-base text-muted">Money put in</p>
-            <p className="mt-1 text-xl font-semibold">{formatINR(metrics.totalInvested)}</p>
+            <p className="mt-1 text-xl font-semibold">
+              {formatINR(netDeposits > 0 ? netDeposits : metrics.totalInvested)}
+            </p>
           </div>
           <div>
             <p className="text-base text-muted">Profit or loss</p>
@@ -245,19 +357,20 @@ export default function PortfolioPage({
               <Money value={metrics.totalPl} signed />
             </p>
           </div>
-          <div>
-            <p className="text-base text-muted">Today</p>
-            <p className="mt-1 text-xl font-semibold">
-              <Money value={metrics.dayChange} signed />
-            </p>
-          </div>
         </div>
+        {cashBalance < -1 ? (
+          <p className="mt-4 text-base text-muted">
+            Cash is negative because buys were funded without a recorded deposit.
+            Add a deposit under Cash to match money you put into the account.
+          </p>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap gap-2">
         {(
           [
-            { id: "holdings" as const, label: "What you own" },
+            { id: "holdings" as const, label: "Open positions" },
+            { id: "cash" as const, label: "Cash" },
             { id: "trades" as const, label: "Trade history" },
           ] as const
         ).map((t) => (
@@ -324,6 +437,165 @@ export default function PortfolioPage({
         </div>
       ) : null}
 
+      {tab === "cash" ? (
+        <div className="space-y-5">
+          <div className="card space-y-4 p-5">
+            <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
+              {editCashId ? "Edit cash entry" : "Add or remove cash"}
+            </h2>
+            <p className="text-base text-muted">
+              Record money you transfer into or out of this account. Buys and sells
+              update cash automatically.
+            </p>
+            <div>
+              <label className="label">Deposit or withdrawal?</label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  className={`btn ${cashType === "DEPOSIT" ? "btn-primary" : "btn-ghost"}`}
+                  onClick={() => setCashType("DEPOSIT")}
+                >
+                  Deposit
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${cashType === "WITHDRAWAL" ? "btn-primary" : "btn-ghost"}`}
+                  onClick={() => setCashType("WITHDRAWAL")}
+                >
+                  Withdrawal
+                </button>
+              </div>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              <div>
+                <label className="label" htmlFor="cash-amount">
+                  Amount
+                </label>
+                <input
+                  id="cash-amount"
+                  className="input"
+                  type="number"
+                  min="0"
+                  step="any"
+                  inputMode="decimal"
+                  value={cashAmount}
+                  onChange={(e) => setCashAmount(e.target.value)}
+                  placeholder="50000"
+                />
+              </div>
+              <div>
+                <label className="label" htmlFor="cash-date">
+                  Date
+                </label>
+                <input
+                  id="cash-date"
+                  className="input"
+                  type="date"
+                  value={cashDate}
+                  onChange={(e) => setCashDate(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="label" htmlFor="cash-notes">
+                  Notes (optional)
+                </label>
+                <input
+                  id="cash-notes"
+                  className="input"
+                  value={cashNotes}
+                  onChange={(e) => setCashNotes(e.target.value)}
+                  placeholder="Bank transfer"
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={cashSaving}
+                onClick={() => submitCash()}
+              >
+                {cashSaving
+                  ? "Saving…"
+                  : editCashId
+                    ? "Save changes"
+                    : cashType === "DEPOSIT"
+                      ? "Add deposit"
+                      : "Add withdrawal"}
+              </button>
+              {editCashId ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={cashSaving}
+                  onClick={resetCashForm}
+                >
+                  Cancel
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="card table-wrap">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Type</th>
+                  <th>Amount</th>
+                  <th>Notes</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {(data.cash?.transactions ?? [])
+                  .slice()
+                  .reverse()
+                  .map((t) => (
+                    <tr key={t.id}>
+                      <td>
+                        {new Date(t.executedAt).toLocaleDateString("en-IN")}
+                      </td>
+                      <td>
+                        {t.type === "DEPOSIT" ? "Deposit" : "Withdrawal"}
+                      </td>
+                      <td>{formatINR(t.amount)}</td>
+                      <td className="text-muted">{t.notes || "—"}</td>
+                      <td>
+                        <div className="flex gap-1">
+                          <button
+                            type="button"
+                            className="btn btn-ghost !px-2"
+                            onClick={() => startEditCash(t)}
+                            aria-label="Edit"
+                          >
+                            <Pencil size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost !px-2"
+                            onClick={() => removeCashTxn(t.id)}
+                            aria-label="Remove"
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                {(data.cash?.transactions?.length ?? 0) === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="text-muted">
+                      No deposits or withdrawals yet.
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
       {tab === "holdings" ? (
         <div className="card table-wrap">
           <table className="data">
@@ -331,7 +603,7 @@ export default function PortfolioPage({
               <tr>
                 <th>Stock</th>
                 <th>Type</th>
-                <th>Shares</th>
+                <th>Qty</th>
                 <th>Avg cost</th>
                 <th>Price now</th>
                 <th>Value</th>
@@ -351,10 +623,21 @@ export default function PortfolioPage({
                   <td className="text-base text-muted">
                     {h.instrumentType === "FUTURES" ? "Futures" : "Stock"}
                   </td>
-                  <td>{formatNumber(h.quantity, 4)}</td>
+                  <td>
+                    {h.instrumentType === "FUTURES"
+                      ? `${formatNumber(h.quantity, 4)} lots × ${h.lotSize}`
+                      : formatNumber(h.quantity, 4)}
+                  </td>
                   <td>{formatINR(h.avgCost)}</td>
                   <td>{formatINR(h.price)}</td>
-                  <td>{formatINR(h.marketValue)}</td>
+                  <td>
+                    {formatINR(h.marketValue)}
+                    {h.instrumentType === "FUTURES" && h.notional != null ? (
+                      <span className="mt-0.5 block text-sm text-muted">
+                        Notional {formatINR(h.notional)}
+                      </span>
+                    ) : null}
+                  </td>
                   <td>
                     <Money value={h.unrealized} signed />{" "}
                     <Pct value={h.unrealizedPct} className="text-xs" />
@@ -541,6 +824,8 @@ export default function PortfolioPage({
                 action: editTrade.action,
                 instrumentType: editTrade.instrumentType ?? "EQUITY",
                 quantity: editTrade.quantity,
+                lotSize: editTrade.lotSize ?? 1,
+                margin: editTrade.margin ?? 0,
                 pricePerShare: editTrade.pricePerShare,
                 fees: editTrade.fees,
                 executedAt: editTrade.executedAt,

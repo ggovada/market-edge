@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowLeft, X } from "lucide-react";
 import { formatINR } from "@/lib/utils";
 
@@ -18,6 +18,8 @@ type Props = {
     action?: "BUY" | "SELL";
     instrumentType?: "EQUITY" | "FUTURES";
     quantity?: number;
+    lotSize?: number;
+    margin?: number;
     pricePerShare?: number;
     fees?: number;
     executedAt?: string;
@@ -27,13 +29,29 @@ type Props = {
 
 type Step = 1 | 2 | 3 | 4;
 
+type SearchHit = {
+  symbol: string;
+  name: string;
+  type: string;
+  exchange: string;
+  lotSize?: number;
+  expiry?: string;
+};
+
 export function TradeForm({ open, onClose, portfolioId, onSaved, initial }: Props) {
   const [step, setStep] = useState<Step>(1);
   const [ticker, setTicker] = useState(initial?.ticker ?? "");
+  const [companyQuery, setCompanyQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<SearchHit[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const searchWrapRef = useRef<HTMLDivElement>(null);
   const [action, setAction] = useState<"BUY" | "SELL">(initial?.action ?? "BUY");
   const [instrumentType, setInstrumentType] = useState<"EQUITY" | "FUTURES">(
     initial?.instrumentType ?? "EQUITY"
   );
+  const [lotSize, setLotSize] = useState(String(initial?.lotSize ?? "1"));
+  const [margin, setMargin] = useState(String(initial?.margin ?? ""));
   const [quantity, setQuantity] = useState(String(initial?.quantity ?? ""));
   const [price, setPrice] = useState(String(initial?.pricePerShare ?? ""));
   const [fees, setFees] = useState(String(initial?.fees ?? "0"));
@@ -52,8 +70,13 @@ export function TradeForm({ open, onClose, portfolioId, onSaved, initial }: Prop
     if (!open) return;
     setStep(1);
     setTicker(initial?.ticker ?? "");
+    setCompanyQuery(initial?.ticker ?? "");
+    setSuggestions([]);
+    setShowSuggestions(false);
     setAction(initial?.action ?? "BUY");
     setInstrumentType(initial?.instrumentType ?? "EQUITY");
+    setLotSize(String(initial?.lotSize ?? "1"));
+    setMargin(String(initial?.margin ?? ""));
     setQuantity(String(initial?.quantity ?? ""));
     setPrice(String(initial?.pricePerShare ?? ""));
     setFees(String(initial?.fees ?? "0"));
@@ -66,6 +89,43 @@ export function TradeForm({ open, onClose, portfolioId, onSaved, initial }: Prop
     setConfirmFarPrice(false);
     setShowAdvanced(false);
   }, [open, initial]);
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (!searchWrapRef.current?.contains(e.target as Node)) {
+        setShowSuggestions(false);
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  useEffect(() => {
+    if (!open || step !== 1) return;
+    const q = companyQuery.trim();
+    if (q.length < 2) {
+      setSuggestions([]);
+      setSearchLoading(false);
+      return;
+    }
+    const handle = setTimeout(async () => {
+      setSearchLoading(true);
+      try {
+        const res = await fetch(
+          `/api/search?q=${encodeURIComponent(q)}&type=${instrumentType}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        setSuggestions(data.results ?? []);
+        setShowSuggestions(true);
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 280);
+    return () => clearTimeout(handle);
+  }, [companyQuery, instrumentType, open, step]);
 
   useEffect(() => {
     if (!open || !ticker.trim() || ticker.trim().length < 2) {
@@ -131,6 +191,12 @@ export function TradeForm({ open, onClose, portfolioId, onSaved, initial }: Prop
         action,
         instrumentType,
         quantity: Number(quantity),
+        lotSize:
+          instrumentType === "FUTURES" ? Math.max(1, Number(lotSize) || 1) : 1,
+        margin:
+          instrumentType === "FUTURES" && action === "BUY"
+            ? Math.max(0, Number(margin) || 0)
+            : 0,
         pricePerShare: Number(price),
         fees: Number(fees || 0),
         executedAt: new Date(executedAt).toISOString(),
@@ -230,65 +296,194 @@ export function TradeForm({ open, onClose, portfolioId, onSaved, initial }: Prop
                   <button
                     type="button"
                     className={`btn ${instrumentType === "EQUITY" ? "btn-primary" : "btn-ghost"}`}
-                    onClick={() => setInstrumentType("EQUITY")}
+                    onClick={() => {
+                      setInstrumentType("EQUITY");
+                      setLotSize("1");
+                      setSuggestions([]);
+                      setShowSuggestions(false);
+                    }}
                   >
                     Stock
                   </button>
                   <button
                     type="button"
                     className={`btn ${instrumentType === "FUTURES" ? "btn-primary" : "btn-ghost"}`}
-                    onClick={() => setInstrumentType("FUTURES")}
+                    onClick={() => {
+                      setInstrumentType("FUTURES");
+                      setSuggestions([]);
+                      setShowSuggestions(false);
+                    }}
                   >
                     Futures
                   </button>
                 </div>
               </div>
-              <div>
-                <label className="label" htmlFor="trade-ticker">
-                  Stock symbol
+              <div ref={searchWrapRef} className="relative">
+                <label className="label" htmlFor="trade-company">
+                  {instrumentType === "FUTURES"
+                    ? "Company or contract name"
+                    : "Company name"}
                 </label>
                 <input
-                  id="trade-ticker"
+                  id="trade-company"
                   className="input"
-                  required
                   autoFocus
+                  autoComplete="off"
                   placeholder={
                     instrumentType === "FUTURES"
-                      ? "Example: NIFTY25APRFUT.NS"
-                      : "Example: RELIANCE.NS"
+                      ? "Try: Reliance, Nifty, Bank Nifty"
+                      : "Try: Reliance, Infosys, HDFC Bank"
                   }
-                  value={ticker}
-                  onChange={(e) => setTicker(e.target.value.toUpperCase())}
+                  value={companyQuery}
+                  onChange={(e) => {
+                    setCompanyQuery(e.target.value);
+                    setShowSuggestions(true);
+                    // Allow typing a known ticker directly
+                    const raw = e.target.value.trim();
+                    if (/^[A-Za-z0-9.:^*=-]+$/.test(raw) && raw.length >= 2) {
+                      setTicker(raw.toUpperCase());
+                    } else if (!raw) {
+                      setTicker("");
+                    }
+                  }}
+                  onFocus={() => {
+                    if (suggestions.length > 0) setShowSuggestions(true);
+                  }}
                 />
-                <p className="help">
-                  Use the Yahoo Finance symbol. Indian stocks usually end with{" "}
-                  <strong>.NS</strong> (example: TCS.NS).
-                </p>
+                {searchLoading ? (
+                  <p className="help">Searching…</p>
+                ) : showSuggestions && suggestions.length > 0 ? (
+                  <ul
+                    className="absolute z-20 mt-1 max-h-64 w-full overflow-y-auto rounded-xl border-2 border-line bg-white shadow-lg"
+                    role="listbox"
+                  >
+                    {suggestions.map((hit) => (
+                      <li key={hit.symbol}>
+                        <button
+                          type="button"
+                          className="flex w-full flex-col items-start gap-0.5 px-4 py-3 text-left hover:bg-[var(--accent-soft)]"
+                          onClick={() => {
+                            setTicker(hit.symbol);
+                            setCompanyQuery(hit.name);
+                            if (hit.lotSize) setLotSize(String(hit.lotSize));
+                            setShowSuggestions(false);
+                          }}
+                        >
+                          <span className="font-semibold text-ink">{hit.symbol}</span>
+                          <span className="text-sm text-muted">
+                            {hit.name}
+                            {hit.lotSize ? ` · lot ${hit.lotSize}` : ""}
+                            {hit.exchange ? ` · ${hit.exchange}` : ""}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : showSuggestions &&
+                  companyQuery.trim().length >= 2 &&
+                  !searchLoading ? (
+                  <p className="help">
+                    No matches. Try another name, or type the ticker directly
+                    (example:{" "}
+                    {instrumentType === "FUTURES"
+                      ? "NSE:RELIANCE26SEPFUT"
+                      : "RELIANCE.NS"}
+                    ).
+                  </p>
+                ) : null}
+                {ticker ? (
+                  <p className="help mt-2">
+                    Selected ticker: <strong>{ticker}</strong>
+                    {instrumentType === "FUTURES" && Number(lotSize) > 1
+                      ? ` · lot size ${lotSize}`
+                      : ""}
+                  </p>
+                ) : (
+                  <p className="help">
+                    {instrumentType === "FUTURES"
+                      ? "Type a name and pick an NSE futures contract (lot size is filled in for you)."
+                      : "Type the company name and pick the NSE ticker (usually ends with .NS)."}
+                  </p>
+                )}
               </div>
             </>
           ) : null}
 
           {step === 2 ? (
-            <div>
-              <label className="label" htmlFor="trade-qty">
-                {instrumentType === "FUTURES" ? "Number of lots" : "Number of shares"}
-              </label>
-              <input
-                id="trade-qty"
-                className="input"
-                required
-                autoFocus
-                type="number"
-                min="0"
-                step="any"
-                inputMode="decimal"
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-              />
-              <p className="help">
-                You {action === "BUY" ? "bought" : "sold"}{" "}
-                <strong>{ticker || "this symbol"}</strong>.
-              </p>
+            <div className="space-y-5">
+              <div>
+                <label className="label" htmlFor="trade-qty">
+                  {instrumentType === "FUTURES" ? "Number of lots" : "Number of shares"}
+                </label>
+                <input
+                  id="trade-qty"
+                  className="input"
+                  required
+                  autoFocus
+                  type="number"
+                  min="0"
+                  step="any"
+                  inputMode="decimal"
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                />
+                <p className="help">
+                  You {action === "BUY" ? "bought" : "sold"}{" "}
+                  <strong>{ticker || "this symbol"}</strong>.
+                </p>
+              </div>
+              {instrumentType === "FUTURES" ? (
+                <div>
+                  <label className="label" htmlFor="trade-lot-size">
+                    Shares per lot
+                  </label>
+                  <input
+                    id="trade-lot-size"
+                    className="input"
+                    type="number"
+                    min="1"
+                    step="1"
+                    inputMode="numeric"
+                    value={lotSize}
+                    onChange={(e) => setLotSize(e.target.value)}
+                  />
+                  <p className="help">
+                    From the contract master when you picked a ticker. You can
+                    correct it if needed.
+                    {Number(quantity) > 0 && Number(lotSize) > 0
+                      ? ` Total underlying units: ${Number(quantity) * Number(lotSize)}.`
+                      : ""}
+                  </p>
+                </div>
+              ) : null}
+              {instrumentType === "FUTURES" && action === "BUY" ? (
+                <div>
+                  <label className="label" htmlFor="trade-margin">
+                    Margin blocked (₹)
+                  </label>
+                  <input
+                    id="trade-margin"
+                    className="input"
+                    type="number"
+                    min="0"
+                    step="any"
+                    inputMode="decimal"
+                    value={margin}
+                    onChange={(e) => setMargin(e.target.value)}
+                    placeholder="Optional — from your broker"
+                  />
+                  <p className="help">
+                    Cash locked for this position. It leaves free cash now and
+                    returns when you close (plus or minus P/L).
+                  </p>
+                </div>
+              ) : null}
+              {instrumentType === "FUTURES" && action === "SELL" ? (
+                <p className="help">
+                  Closing releases any margin that was blocked on the matching
+                  open lots, and settles P/L into cash.
+                </p>
+              ) : null}
             </div>
           ) : null}
 
@@ -296,7 +491,9 @@ export function TradeForm({ open, onClose, portfolioId, onSaved, initial }: Prop
             <>
               <div>
                 <label className="label" htmlFor="trade-price">
-                  Price per {instrumentType === "FUTURES" ? "unit" : "share"}
+                  {instrumentType === "FUTURES"
+                    ? "Futures price (per unit)"
+                    : "Price per share"}
                 </label>
                 <input
                   id="trade-price"
@@ -315,8 +512,22 @@ export function TradeForm({ open, onClose, portfolioId, onSaved, initial }: Prop
                     ? "Checking today’s market price…"
                     : livePrice != null
                       ? `Today’s market price: ${formatINR(livePrice)}`
-                      : "No live price found yet — double-check the symbol."}
+                      : instrumentType === "FUTURES"
+                        ? "Enter the price from your broker if no live quote appears."
+                        : "No live price found yet — double-check the symbol."}
                 </p>
+                {instrumentType === "FUTURES" &&
+                Number(quantity) > 0 &&
+                Number(lotSize) > 0 &&
+                Number(price) > 0 ? (
+                  <p className="help mt-1">
+                    Notional ≈{" "}
+                    {formatINR(
+                      Number(quantity) * Number(lotSize) * Number(price)
+                    )}{" "}
+                    (lots × lot size × price).
+                  </p>
+                ) : null}
                 {livePrice != null ? (
                   <button
                     type="button"
@@ -357,11 +568,26 @@ export function TradeForm({ open, onClose, portfolioId, onSaved, initial }: Prop
                   value={instrumentType === "FUTURES" ? "Futures" : "Stock"}
                 />
                 <Row label="Symbol" value={ticker} />
-                <Row label="Quantity" value={quantity} />
+                <Row
+                  label={instrumentType === "FUTURES" ? "Lots" : "Quantity"}
+                  value={quantity}
+                />
+                {instrumentType === "FUTURES" ? (
+                  <Row label="Lot size" value={lotSize} />
+                ) : null}
+                {instrumentType === "FUTURES" && action === "BUY" && Number(margin) > 0 ? (
+                  <Row label="Margin" value={formatINR(Number(margin) || 0)} />
+                ) : null}
                 <Row label="Price" value={formatINR(Number(price) || 0)} />
                 <Row
-                  label="Total"
-                  value={formatINR((Number(quantity) || 0) * (Number(price) || 0))}
+                  label="Notional"
+                  value={formatINR(
+                    (Number(quantity) || 0) *
+                      (instrumentType === "FUTURES"
+                        ? Math.max(1, Number(lotSize) || 1)
+                        : 1) *
+                      (Number(price) || 0)
+                  )}
                 />
               </div>
 

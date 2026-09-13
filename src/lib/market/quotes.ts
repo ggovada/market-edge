@@ -1,8 +1,32 @@
 import { prisma } from "@/lib/db";
 import { getMarketDataProvider } from "@/lib/market/yahoo";
+import { getNseFoQuotes, isNseFoTicker } from "@/lib/market/nse-futures";
 import type { Quote } from "@/lib/market/types";
 
 const DEFAULT_TTL = Number(process.env.QUOTE_CACHE_TTL_SECONDS ?? 20);
+
+async function upsertQuote(q: Quote) {
+  await prisma.priceSnapshot.upsert({
+    where: { ticker: q.ticker },
+    create: {
+      ticker: q.ticker,
+      price: q.price,
+      dayChange: q.dayChange,
+      dayChangePct: q.dayChangePct,
+      currency: q.currency,
+      fetchedAt: q.fetchedAt,
+      stale: false,
+    },
+    update: {
+      price: q.price,
+      dayChange: q.dayChange,
+      dayChangePct: q.dayChangePct,
+      currency: q.currency,
+      fetchedAt: q.fetchedAt,
+      stale: false,
+    },
+  });
+}
 
 export async function getCachedQuotes(
   tickers: string[],
@@ -44,29 +68,20 @@ export async function getCachedQuotes(
 
   if (stale.length > 0) {
     try {
-      const provider = getMarketDataProvider();
-      const quotes = await provider.getQuotes(stale);
+      const nseTickers = stale.filter(isNseFoTicker);
+      const yahooTickers = stale.filter((t) => !isNseFoTicker(t));
+
+      const quotes: Quote[] = [];
+      if (nseTickers.length > 0) {
+        quotes.push(...(await getNseFoQuotes(nseTickers)));
+      }
+      if (yahooTickers.length > 0) {
+        const provider = getMarketDataProvider();
+        quotes.push(...(await provider.getQuotes(yahooTickers)));
+      }
+
       for (const q of quotes) {
-        await prisma.priceSnapshot.upsert({
-          where: { ticker: q.ticker },
-          create: {
-            ticker: q.ticker,
-            price: q.price,
-            dayChange: q.dayChange,
-            dayChangePct: q.dayChangePct,
-            currency: q.currency,
-            fetchedAt: q.fetchedAt,
-            stale: false,
-          },
-          update: {
-            price: q.price,
-            dayChange: q.dayChange,
-            dayChangePct: q.dayChangePct,
-            currency: q.currency,
-            fetchedAt: q.fetchedAt,
-            stale: false,
-          },
-        });
+        await upsertQuote(q);
         fresh.push(q);
       }
 

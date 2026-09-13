@@ -24,7 +24,22 @@ export async function GET() {
           })
         );
         const currentValue = portfolioMetrics.reduce((s, p) => s + p.metrics.currentValue, 0);
-        const totalInvested = portfolioMetrics.reduce((s, p) => s + p.metrics.totalInvested, 0);
+        const holdingsValue = portfolioMetrics.reduce(
+          (s, p) => s + p.metrics.holdingsValue,
+          0
+        );
+        const cashBalance = portfolioMetrics.reduce(
+          (s, p) => s + p.metrics.cashBalance,
+          0
+        );
+        const netDeposits = portfolioMetrics.reduce(
+          (s, p) => s + p.metrics.netDeposits,
+          0
+        );
+        const totalInvested = portfolioMetrics.reduce(
+          (s, p) => s + p.metrics.totalInvested,
+          0
+        );
         const totalPl = portfolioMetrics.reduce((s, p) => s + p.metrics.totalPl, 0);
         const dayChange = portfolioMetrics.reduce((s, p) => s + p.metrics.dayChange, 0);
         const ltcg = await getMemberLtcgExemption(m.id);
@@ -34,6 +49,9 @@ export async function GET() {
           portfolios: portfolioMetrics,
           summary: {
             currentValue,
+            holdingsValue,
+            cashBalance,
+            netDeposits,
             totalInvested,
             totalPl,
             dayChange,

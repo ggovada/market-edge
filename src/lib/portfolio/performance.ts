@@ -1,6 +1,10 @@
 import YahooFinance from "yahoo-finance2";
 import { prisma } from "@/lib/db";
 import { normalizeTicker } from "@/lib/utils";
+import {
+  contractMultiplier,
+  isFuturesInstrument,
+} from "@/lib/market/contract";
 
 export type PerformanceRange = "1D" | "1W" | "1M" | "3M" | "YTD" | "1Y" | "5Y";
 
@@ -8,6 +12,8 @@ export type PerformancePoint = {
   date: string;
   totalValue: number;
   totalCostBasis: number;
+  holdingsValue?: number;
+  cashBalance?: number;
 };
 
 export type PerformanceSeries = {
@@ -95,7 +101,6 @@ export async function buildOverallPerformance(
 ): Promise<PerformanceSeries> {
   const now = new Date();
   const from = rangeStart(range, now);
-  // Pull a bit more history so prices exist before the visible window
   const historyFrom = new Date(from);
   historyFrom.setDate(historyFrom.getDate() - 14);
   const interval = RANGE_CONFIG[range].interval;
@@ -107,19 +112,34 @@ export async function buildOverallPerformance(
   const portfolioIds = portfolios.map((p) => p.id);
   if (!portfolioIds.length) return empty(range);
 
-  const trades = await prisma.trade.findMany({
-    where: { portfolioId: { in: portfolioIds }, deletedAt: null },
-    orderBy: [{ executedAt: "asc" }, { createdAt: "asc" }],
-    select: {
-      ticker: true,
-      action: true,
-      quantity: true,
-      pricePerShare: true,
-      fees: true,
-      executedAt: true,
-    },
-  });
-  if (!trades.length) return empty(range);
+  const [trades, cashTxns] = await Promise.all([
+    prisma.trade.findMany({
+      where: { portfolioId: { in: portfolioIds }, deletedAt: null },
+      orderBy: [{ executedAt: "asc" }, { createdAt: "asc" }],
+      select: {
+        ticker: true,
+        action: true,
+        quantity: true,
+        pricePerShare: true,
+        fees: true,
+        executedAt: true,
+        instrumentType: true,
+        lotSize: true,
+        margin: true,
+      },
+    }),
+    prisma.cashTransaction.findMany({
+      where: { portfolioId: { in: portfolioIds } },
+      orderBy: [{ executedAt: "asc" }, { createdAt: "asc" }],
+      select: {
+        type: true,
+        amount: true,
+        executedAt: true,
+      },
+    }),
+  ]);
+
+  if (!trades.length && !cashTxns.length) return empty(range);
 
   const tickers = [...new Set(trades.map((t) => normalizeTicker(t.ticker)))];
 
@@ -134,6 +154,10 @@ export async function buildOverallPerformance(
     })
   );
 
+  for (const c of cashTxns) {
+    allKeys.add(toKey(c.executedAt, interval === "1d" ? "1d" : interval));
+  }
+
   const keys = [...allKeys].sort();
   const fromMs = from.getTime();
   const nowMs = now.getTime();
@@ -143,31 +167,92 @@ export async function buildOverallPerformance(
   });
   if (!filteredKeys.length) return empty(range);
 
-  const qtyByTicker = new Map<string, number>();
-  const costByTicker = new Map<string, number>();
+  type Lot = { qty: number; cost: number; mult: number; isFut: boolean; margin: number };
+  const lotsByTicker = new Map<string, Lot[]>();
+  let cashBalance = 0;
+  let marginBlocked = 0;
+  let netDeposits = 0;
   let tradeIdx = 0;
+  let cashIdx = 0;
 
-  const apply = (t: (typeof trades)[number]) => {
+  const applyTrade = (t: (typeof trades)[number]) => {
     const ticker = normalizeTicker(t.ticker);
-    const qty = qtyByTicker.get(ticker) ?? 0;
-    const cost = costByTicker.get(ticker) ?? 0;
-    if (t.action === "BUY") {
-      qtyByTicker.set(ticker, qty + t.quantity);
-      costByTicker.set(
-        ticker,
-        cost + t.quantity * t.pricePerShare + (t.fees || 0)
-      );
-    } else if (qty > 0) {
-      const sellQty = Math.min(qty, t.quantity);
-      const avg = cost / qty;
-      const nextQty = qty - sellQty;
-      if (nextQty <= 1e-9) {
-        qtyByTicker.delete(ticker);
-        costByTicker.delete(ticker);
-      } else {
-        qtyByTicker.set(ticker, nextQty);
-        costByTicker.set(ticker, cost - avg * sellQty);
+    const isFut = isFuturesInstrument(t.instrumentType);
+    const mult = contractMultiplier(t.instrumentType, t.lotSize);
+    const fees = t.fees || 0;
+    if (!lotsByTicker.has(ticker)) lotsByTicker.set(ticker, []);
+    const q = lotsByTicker.get(ticker)!;
+
+    if (!isFut) {
+      const notional = t.quantity * t.pricePerShare;
+      if (t.action === "BUY") {
+        cashBalance -= notional + fees;
+        q.push({
+          qty: t.quantity,
+          cost: notional + fees,
+          mult: 1,
+          isFut: false,
+          margin: 0,
+        });
+      } else if (t.action === "SELL") {
+        cashBalance += notional - fees;
+        let remaining = t.quantity;
+        while (remaining > 1e-9 && q.length > 0) {
+          const lot = q[0];
+          const take = Math.min(lot.qty, remaining);
+          const frac = lot.qty > 0 ? take / lot.qty : 0;
+          lot.qty -= take;
+          lot.cost -= lot.cost * frac;
+          remaining -= take;
+          if (lot.qty <= 1e-9) q.shift();
+        }
       }
+      return;
+    }
+
+    if (t.action === "BUY") {
+      const units = t.quantity * mult;
+      const feePerUnit = units > 0 ? fees / units : 0;
+      const margin = Math.max(0, (t as { margin?: number }).margin ?? 0);
+      cashBalance -= margin;
+      marginBlocked += margin;
+      q.push({
+        qty: t.quantity,
+        cost: t.quantity * mult * (t.pricePerShare + feePerUnit),
+        mult,
+        isFut: true,
+        margin,
+      });
+    } else if (t.action === "SELL") {
+      let remaining = t.quantity;
+      const sellUnits = t.quantity * mult;
+      const feePerUnit = sellUnits > 0 ? fees / sellUnits : 0;
+      const netExit = t.pricePerShare - feePerUnit;
+      while (remaining > 1e-9 && q.length > 0) {
+        const lot = q[0];
+        const take = Math.min(lot.qty, remaining);
+        const avgCostPerLot = lot.qty > 0 ? lot.cost / lot.qty : 0;
+        const marginRelease = lot.qty > 0 ? (take / lot.qty) * lot.margin : 0;
+        const proceeds = take * lot.mult * netExit;
+        const costBasis = take * avgCostPerLot;
+        cashBalance += marginRelease + (proceeds - costBasis);
+        marginBlocked -= marginRelease;
+        lot.qty -= take;
+        lot.cost -= costBasis;
+        lot.margin -= marginRelease;
+        remaining -= take;
+        if (lot.qty <= 1e-9) q.shift();
+      }
+    }
+  };
+
+  const applyCash = (c: (typeof cashTxns)[number]) => {
+    if (c.type === "DEPOSIT") {
+      cashBalance += c.amount;
+      netDeposits += c.amount;
+    } else if (c.type === "WITHDRAWAL") {
+      cashBalance -= c.amount;
+      netDeposits -= c.amount;
     }
   };
 
@@ -180,47 +265,91 @@ export async function buildOverallPerformance(
     ).getTime();
 
     while (
+      cashIdx < cashTxns.length &&
+      cashTxns[cashIdx].executedAt.getTime() <= keyTime
+    ) {
+      applyCash(cashTxns[cashIdx]);
+      cashIdx++;
+    }
+
+    while (
       tradeIdx < trades.length &&
       trades[tradeIdx].executedAt.getTime() <= keyTime
     ) {
-      apply(trades[tradeIdx]);
+      applyTrade(trades[tradeIdx]);
       tradeIdx++;
     }
 
-    let totalValue = 0;
-    let totalCost = 0;
+    let holdingsValue = 0;
 
-    for (const [ticker, qty] of qtyByTicker) {
+    for (const [ticker, lots] of lotsByTicker) {
+      const qty = lots.reduce((s, l) => s + l.qty, 0);
+      const cost = lots.reduce((s, l) => s + l.cost, 0);
       if (qty <= 1e-9) continue;
-      totalCost += costByTicker.get(ticker) ?? 0;
+      const isFut = lots.some((l) => l.isFut);
+      const mult = lots[0]?.mult ?? 1;
       const map = historyByTicker.get(ticker) ?? new Map();
       const price =
         map.get(key) ?? nearestPrice(map, filteredKeys, ki) ?? null;
-      if (price != null) {
-        totalValue += qty * price;
+      if (isFut) {
+        if (price != null) {
+          holdingsValue += qty * mult * price - cost;
+        }
+      } else if (price != null) {
+        holdingsValue += qty * price;
       } else {
-        const avg = (costByTicker.get(ticker) ?? 0) / qty;
-        totalValue += qty * avg;
+        holdingsValue += cost;
       }
     }
+
+    const totalValue = holdingsValue + cashBalance + Math.max(0, marginBlocked);
 
     points.push({
       date: key,
       totalValue: Math.round(totalValue * 100) / 100,
-      totalCostBasis: Math.round(totalCost * 100) / 100,
+      totalCostBasis: Math.round(netDeposits * 100) / 100,
+      holdingsValue: Math.round(holdingsValue * 100) / 100,
+      cashBalance: Math.round(cashBalance * 100) / 100,
     });
   }
 
-  if (!points.length) return empty(range);
+  const firstActive = points.findIndex(
+    (p) => Math.abs(p.totalValue) > 1e-6 || (p.cashBalance ?? 0) !== 0
+  );
+  const seriesPoints = firstActive >= 0 ? points.slice(firstActive) : [];
+  if (!seriesPoints.length) return empty(range);
 
-  const startValue = points[0].totalValue;
-  const endValue = points[points.length - 1].totalValue;
-  const change = endValue - startValue;
-  const changePct = startValue > 0 ? (change / startValue) * 100 : 0;
+  const startValue = seriesPoints[0].totalValue;
+  const endValue = seriesPoints[seriesPoints.length - 1].totalValue;
+  const startKey =
+    seriesPoints[0].date.length >= 10
+      ? seriesPoints[0].date.slice(0, 10)
+      : toKey(new Date(seriesPoints[0].date), "1d");
+  const endKey =
+    seriesPoints[seriesPoints.length - 1].date.length >= 10
+      ? seriesPoints[seriesPoints.length - 1].date.slice(0, 10)
+      : toKey(new Date(seriesPoints[seriesPoints.length - 1].date), "1d");
+
+  let netExternalFlow = 0;
+  for (const c of cashTxns) {
+    const key = toKey(c.executedAt, "1d");
+    if (key <= startKey || key > endKey) continue;
+    if (c.type === "DEPOSIT") netExternalFlow += c.amount;
+    else if (c.type === "WITHDRAWAL") netExternalFlow -= c.amount;
+  }
+
+  const change = endValue - startValue - netExternalFlow;
+  const capitalBase = Math.max(
+    Math.abs(startValue + netExternalFlow),
+    Math.abs(seriesPoints[seriesPoints.length - 1].totalCostBasis ?? 0),
+    Math.abs(startValue)
+  );
+  const changePct =
+    capitalBase >= 1_000 ? (change / capitalBase) * 100 : 0;
 
   return {
     range,
-    points,
+    points: seriesPoints,
     startValue,
     endValue,
     change,

@@ -43,6 +43,8 @@ export async function POST(req: Request) {
       action: body.action,
       instrumentType: body.instrumentType === "FUTURES" ? "FUTURES" : "EQUITY",
       quantity: Number(body.quantity),
+      lotSize: body.lotSize != null ? Number(body.lotSize) : undefined,
+      margin: body.margin != null ? Number(body.margin) : undefined,
       pricePerShare: Number(body.pricePerShare),
       fees: body.fees != null ? Number(body.fees) : 0,
       executedAt: body.executedAt,

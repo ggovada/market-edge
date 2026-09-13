@@ -31,6 +31,22 @@ model Portfolio {
   realizedGains   RealizedGain[]
   valueSnapshots  PortfolioValueSnapshot[]
   tradeAudits     TradeAuditLog[]
+  cashTransactions CashTransaction[]
+}
+
+model CashTransaction {
+  id          String    @id @default(cuid())
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  /** DEPOSIT | WITHDRAWAL */
+  type        String
+  /** Always positive */
+  amount      Float
+  executedAt  DateTime
+  notes       String?
+  createdAt   DateTime  @default(now())
+
+  @@index([portfolioId, executedAt])
 }
 
 model Trade {
@@ -41,6 +57,10 @@ model Trade {
   action         String // BUY | SELL
   instrumentType String          @default("EQUITY") // EQUITY | FUTURES
   quantity       Float
+  /** Shares per lot for futures (1 for equity). From Fyers FO master when known. */
+  lotSize        Float           @default(1)
+  /** Total margin blocked for this trade (futures). Released pro-rata on close. */
+  margin         Float           @default(0)
   pricePerShare  Float
   fees           Float           @default(0)
   executedAt     DateTime
@@ -76,6 +96,8 @@ model Lot {
   openTrade          Trade          @relation("OpenTrade", fields: [openTradeId], references: [id])
   quantityRemaining  Float
   costBasisPerShare  Float
+  /** Futures margin still blocked for this open lot (released on close). */
+  marginRemaining    Float          @default(0)
   acquiredAt         DateTime
   createdAt          DateTime       @default(now())
   realizedGains      RealizedGain[]

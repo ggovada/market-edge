@@ -8,6 +8,8 @@ export type TradeInput = {
   action: "BUY" | "SELL";
   instrumentType?: "EQUITY" | "FUTURES";
   quantity: number;
+  lotSize?: number;
+  margin?: number;
   pricePerShare: number;
   fees?: number;
   executedAt: Date | string;
@@ -31,13 +33,23 @@ async function audit(
 }
 
 export async function createTrade(input: TradeInput) {
+  const instrumentType =
+    input.instrumentType === "FUTURES" ? "FUTURES" : "EQUITY";
+  const lotSize =
+    instrumentType === "FUTURES"
+      ? Math.max(1, Number(input.lotSize) || 1)
+      : 1;
+  const margin =
+    instrumentType === "FUTURES" ? Math.max(0, Number(input.margin) || 0) : 0;
   const trade = await prisma.trade.create({
     data: {
       portfolioId: input.portfolioId,
       ticker: normalizeTicker(input.ticker),
       action: input.action,
-      instrumentType: input.instrumentType === "FUTURES" ? "FUTURES" : "EQUITY",
+      instrumentType,
       quantity: input.quantity,
+      lotSize,
+      margin,
       pricePerShare: input.pricePerShare,
       fees: input.fees ?? 0,
       executedAt: new Date(input.executedAt),
@@ -53,15 +65,34 @@ export async function updateTrade(id: string, input: Partial<TradeInput>) {
   const existing = await prisma.trade.findUniqueOrThrow({ where: { id } });
   if (existing.deletedAt) throw new Error("Cannot edit a deleted trade");
 
+  const instrumentType =
+    input.instrumentType != null
+      ? input.instrumentType === "FUTURES"
+        ? "FUTURES"
+        : "EQUITY"
+      : undefined;
+  const lotSize =
+    input.lotSize != null
+      ? Math.max(1, Number(input.lotSize) || 1)
+      : instrumentType === "EQUITY"
+        ? 1
+        : undefined;
+  const margin =
+    input.margin != null
+      ? Math.max(0, Number(input.margin) || 0)
+      : instrumentType === "EQUITY"
+        ? 0
+        : undefined;
+
   const trade = await prisma.trade.update({
     where: { id },
     data: {
       ...(input.ticker != null && { ticker: normalizeTicker(input.ticker) }),
       ...(input.action != null && { action: input.action }),
-      ...(input.instrumentType != null && {
-        instrumentType: input.instrumentType === "FUTURES" ? "FUTURES" : "EQUITY",
-      }),
+      ...(instrumentType != null && { instrumentType }),
       ...(input.quantity != null && { quantity: input.quantity }),
+      ...(lotSize != null && { lotSize }),
+      ...(margin != null && { margin }),
       ...(input.pricePerShare != null && { pricePerShare: input.pricePerShare }),
       ...(input.fees != null && { fees: input.fees }),
       ...(input.executedAt != null && { executedAt: new Date(input.executedAt) }),
@@ -103,6 +134,10 @@ export async function importTradesCsv(
     if (action !== "BUY" && action !== "SELL") continue;
     const instrumentType =
       (row.instrumentType ?? "").toUpperCase() === "FUTURES" ? "FUTURES" : "EQUITY";
+    const lotSize =
+      instrumentType === "FUTURES"
+        ? Math.max(1, Number((row as { lotSize?: number }).lotSize) || 1)
+        : 1;
     const trade = await prisma.trade.create({
       data: {
         portfolioId,
@@ -110,6 +145,7 @@ export async function importTradesCsv(
         action,
         instrumentType,
         quantity: Number(row.quantity),
+        lotSize,
         pricePerShare: Number(row.pricePerShare),
         fees: Number(row.fees ?? 0),
         executedAt: new Date(row.executedAt),

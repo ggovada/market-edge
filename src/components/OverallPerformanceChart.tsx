@@ -122,7 +122,7 @@ export function OverallPerformanceChart({
               {positive ? "Up" : "Down"} {Math.abs(series.changePct).toFixed(1)}%
             </div>
             <div className="mt-1 text-base text-muted">
-              <Money value={series.change} signed /> · now{" "}
+              <Money value={series.change} signed /> profit · now{" "}
               {formatINR(series.endValue, true)}
             </div>
           </div>
