@@ -9,7 +9,6 @@ type Member = {
   id: string;
   name: string;
   contactInfo?: string | null;
-  notes?: string | null;
   portfolios: { id: string; name: string }[];
   summary?: { currentValue: number; totalPl: number };
 };
@@ -19,7 +18,6 @@ export default function MembersPage() {
   const [showForm, setShowForm] = useState(false);
   const [name, setName] = useState("");
   const [contact, setContact] = useState("");
-  const [notes, setNotes] = useState("");
 
   async function load() {
     const res = await fetch("/api/members");
@@ -36,12 +34,11 @@ export default function MembersPage() {
     await fetch("/api/members", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, contactInfo: contact, notes }),
+      body: JSON.stringify({ name, contactInfo: contact }),
     });
     setShowForm(false);
     setName("");
     setContact("");
-    setNotes("");
     load();
   }
 
@@ -63,15 +60,19 @@ export default function MembersPage() {
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {members.map((m) => (
-          <Link key={m.id} href={`/members/${m.id}`} className="card block p-4 transition hover:border-accent">
+          <Link
+            key={m.id}
+            href={`/members/${m.id}`}
+            className="card block p-4 transition hover:border-accent"
+          >
             <div className="font-[family-name:var(--font-display)] text-xl font-semibold">
               {m.name}
             </div>
-            <div className="mt-1 text-sm text-muted">
-              {m.portfolios.length} portfolio{m.portfolios.length === 1 ? "" : "s"}
+            <div className="mt-1 text-base text-muted">
+              {m.portfolios.length} account{m.portfolios.length === 1 ? "" : "s"}
             </div>
             {m.summary ? (
-              <div className="mt-3 text-sm font-medium">
+              <div className="mt-3 text-base font-medium">
                 {formatINR(m.summary.currentValue)}
               </div>
             ) : null}
@@ -80,24 +81,48 @@ export default function MembersPage() {
       </div>
 
       {showForm ? (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/35 md:items-center md:p-6">
-          <form onSubmit={create} className="card w-full max-w-md space-y-3 rounded-t-2xl p-4 md:rounded-2xl">
-            <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">New member</h2>
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 md:items-center md:p-6">
+          <form
+            onSubmit={create}
+            className="card w-full max-w-md space-y-4 rounded-t-2xl p-5 md:rounded-2xl"
+          >
+            <h2 className="font-[family-name:var(--font-display)] text-2xl font-semibold">
+              Add a person
+            </h2>
             <div>
-              <label className="label">Name</label>
-              <input className="input" required value={name} onChange={(e) => setName(e.target.value)} />
+              <label className="label" htmlFor="people-member-name">
+                Full name
+              </label>
+              <input
+                id="people-member-name"
+                className="input"
+                required
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+              />
             </div>
             <div>
-              <label className="label">Contact</label>
-              <input className="input" value={contact} onChange={(e) => setContact(e.target.value)} />
+              <label className="label" htmlFor="people-member-contact">
+                Phone or email (optional)
+              </label>
+              <input
+                id="people-member-contact"
+                className="input"
+                value={contact}
+                onChange={(e) => setContact(e.target.value)}
+              />
             </div>
-            <div>
-              <label className="label">Notes</label>
-              <textarea className="textarea" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
-            </div>
-            <div className="flex justify-end gap-2">
-              <button type="button" className="btn btn-ghost" onClick={() => setShowForm(false)}>Cancel</button>
-              <button className="btn btn-primary" type="submit">Create</button>
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setShowForm(false)}
+              >
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary">
+                Save
+              </button>
             </div>
           </form>
         </div>
