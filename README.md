@@ -5,7 +5,7 @@ Multi-member portfolio desk for a single operator: FIFO tax lots (India STCG/LTC
 ## Stack
 
 - Next.js (App Router) + TypeScript + Tailwind
-- Prisma + SQLite (swap `DATABASE_URL` to Postgres for production)
+- Prisma + PostgreSQL (Neon recommended for Vercel)
 - `yahoo-finance2` behind a market-data adapter
 - `lightweight-charts` + `recharts`
 - Anthropic Claude (optional) for technical narratives
@@ -15,16 +15,19 @@ Multi-member portfolio desk for a single operator: FIFO tax lots (India STCG/LTC
 
 ```bash
 npm install
-npx prisma migrate dev --name init
+npx prisma migrate dev
 npm run db:seed
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
 
+See [DEPLOY.md](./DEPLOY.md) for Vercel + Neon setup.
+
 ### Optional env
 
 ```env
+DATABASE_URL=postgresql://...
 ANTHROPIC_API_KEY=sk-ant-...
 CRON_SECRET=your-cron-secret
 QUOTE_CACHE_TTL_SECONDS=20
