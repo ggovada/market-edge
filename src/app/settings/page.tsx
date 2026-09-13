@@ -154,8 +154,8 @@ export default function SettingsPage() {
         </h2>
         <ul className="list-disc space-y-1 pl-5 text-sm text-muted">
           <li>
-            <code>ANTHROPIC_API_KEY</code> — optional; enables Claude narratives for
-            S/R levels
+            Charts AI uses algorithmic support/resistance plus Yahoo-sourced news
+            and analyst ratings (no API key required)
           </li>
           <li>
             <code>DATABASE_URL</code> — SQLite by default; switch to Postgres for

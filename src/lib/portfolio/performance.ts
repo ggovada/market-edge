@@ -5,6 +5,8 @@ import {
   contractMultiplier,
   isFuturesInstrument,
 } from "@/lib/market/contract";
+import { parseNseFoTicker } from "@/lib/market/nse-futures";
+import { getCachedQuotes } from "@/lib/market/quotes";
 
 export type PerformanceRange = "1D" | "1W" | "1M" | "3M" | "YTD" | "1Y" | "5Y";
 
@@ -57,6 +59,27 @@ function toKey(date: Date, interval: ChartInterval): string {
   return date.toISOString();
 }
 
+/** Yahoo/chart symbol for historical closes (futures → underlying). */
+export function historySymbolFor(ticker: string): string {
+  const fo = parseNseFoTicker(ticker);
+  if (!fo) return normalizeTicker(ticker);
+  const u = fo.underlying;
+  if (u === "NIFTY") return "^NSEI";
+  if (u === "BANKNIFTY") return "^NSEBANK";
+  if (u === "FINNIFTY") return "NIFTY_FIN_SERVICE.NS";
+  if (u === "MIDCPNIFTY") return "NIFTY_MID_SELECT.NS";
+  return `${u}.NS`;
+}
+
+function addDailyKeys(into: Set<string>, from: Date, to: Date) {
+  const d = new Date(from.getFullYear(), from.getMonth(), from.getDate());
+  const end = new Date(to.getFullYear(), to.getMonth(), to.getDate());
+  while (d <= end) {
+    into.add(toKey(d, "1d"));
+    d.setDate(d.getDate() + 1);
+  }
+}
+
 async function fetchCloses(
   ticker: string,
   interval: ChartInterval,
@@ -84,11 +107,8 @@ function nearestPrice(
   keys: string[],
   index: number
 ): number | null {
+  // Forward-fill only (prior close) — never peek at future marks
   for (let i = index; i >= 0; i--) {
-    const p = map.get(keys[i]);
-    if (p != null && p > 0) return p;
-  }
-  for (let i = index + 1; i < keys.length; i++) {
     const p = map.get(keys[i]);
     if (p != null && p > 0) return p;
   }
@@ -142,20 +162,57 @@ export async function buildOverallPerformance(
   if (!trades.length && !cashTxns.length) return empty(range);
 
   const tickers = [...new Set(trades.map((t) => normalizeTicker(t.ticker)))];
+  const chartByTicker = new Map(
+    tickers.map((t) => [t, historySymbolFor(t)] as const)
+  );
 
   const historyByTicker = new Map<string, Map<string, number>>();
   const allKeys = new Set<string>();
 
+  const uniqueChartSymbols = [...new Set([...chartByTicker.values()])];
   await Promise.all(
-    tickers.map(async (ticker) => {
-      const map = await fetchCloses(ticker, interval, historyFrom);
-      historyByTicker.set(ticker, map);
+    uniqueChartSymbols.map(async (symbol) => {
+      const map = await fetchCloses(symbol, interval, historyFrom);
+      // Attach the same map to every trade ticker that resolves to this symbol
+      for (const [ticker, chartSym] of chartByTicker) {
+        if (chartSym === symbol) historyByTicker.set(ticker, map);
+      }
       for (const k of map.keys()) allKeys.add(k);
     })
   );
 
+  // Live marks so the series reaches "now" even when Yahoo daily bars lag
+  const todayKey = toKey(now, interval === "1d" ? "1d" : interval);
+  try {
+    const live = await getCachedQuotes(tickers, { force: true });
+    for (const q of live) {
+      if (!(q.price > 0)) continue;
+      const ticker = normalizeTicker(q.ticker);
+      let map = historyByTicker.get(ticker);
+      if (!map) {
+        map = new Map();
+        historyByTicker.set(ticker, map);
+      }
+      map.set(todayKey, q.price);
+      allKeys.add(todayKey);
+    }
+  } catch (e) {
+    console.error("live quotes for performance failed", e);
+  }
+
+  for (const t of trades) {
+    allKeys.add(toKey(t.executedAt, interval === "1d" ? "1d" : interval));
+  }
   for (const c of cashTxns) {
     allKeys.add(toKey(c.executedAt, interval === "1d" ? "1d" : interval));
+  }
+
+  // Daily ranges: fill calendar days so we don't stop at Yahoo's last bar
+  if (interval === "1d") {
+    const firstEvent = [...trades.map((t) => t.executedAt), ...cashTxns.map((c) => c.executedAt)]
+      .sort((a, b) => a.getTime() - b.getTime())[0];
+    const fillFrom = firstEvent && firstEvent > from ? firstEvent : from;
+    addDailyKeys(allKeys, fillFrom, now);
   }
 
   const keys = [...allKeys].sort();
@@ -167,13 +224,22 @@ export async function buildOverallPerformance(
   });
   if (!filteredKeys.length) return empty(range);
 
-  type Lot = { qty: number; cost: number; mult: number; isFut: boolean; margin: number };
+  type Lot = {
+    qty: number;
+    cost: number;
+    mult: number;
+    isFut: boolean;
+    margin: number;
+    openedKey: string;
+  };
   const lotsByTicker = new Map<string, Lot[]>();
   let cashBalance = 0;
   let marginBlocked = 0;
   let netDeposits = 0;
   let tradeIdx = 0;
   let cashIdx = 0;
+  /** Set while building each point so new lots know their open day */
+  let currentKey = filteredKeys[0] ?? todayKey;
 
   const applyTrade = (t: (typeof trades)[number]) => {
     const ticker = normalizeTicker(t.ticker);
@@ -193,6 +259,7 @@ export async function buildOverallPerformance(
           mult: 1,
           isFut: false,
           margin: 0,
+          openedKey: currentKey,
         });
       } else if (t.action === "SELL") {
         cashBalance += notional - fees;
@@ -222,6 +289,7 @@ export async function buildOverallPerformance(
         mult,
         isFut: true,
         margin,
+        openedKey: currentKey,
       });
     } else if (t.action === "SELL") {
       let remaining = t.quantity;
@@ -260,6 +328,7 @@ export async function buildOverallPerformance(
 
   for (let ki = 0; ki < filteredKeys.length; ki++) {
     const key = filteredKeys[ki];
+    currentKey = key;
     const keyTime = new Date(
       key.length === 10 ? `${key}T23:59:59` : key
     ).getTime();
@@ -281,43 +350,98 @@ export async function buildOverallPerformance(
     }
 
     let holdingsValue = 0;
+    let holdingsCostAnchored = 0;
 
     for (const [ticker, lots] of lotsByTicker) {
-      const qty = lots.reduce((s, l) => s + l.qty, 0);
-      const cost = lots.reduce((s, l) => s + l.cost, 0);
-      if (qty <= 1e-9) continue;
-      const isFut = lots.some((l) => l.isFut);
-      const mult = lots[0]?.mult ?? 1;
+      if (lots.reduce((s, l) => s + l.qty, 0) <= 1e-9) continue;
       const map = historyByTicker.get(ticker) ?? new Map();
       const price =
         map.get(key) ?? nearestPrice(map, filteredKeys, ki) ?? null;
-      if (isFut) {
-        if (price != null) {
-          holdingsValue += qty * mult * price - cost;
+
+      for (const lot of lots) {
+        if (lot.qty <= 1e-9) continue;
+
+        let mtm = 0;
+        if (lot.isFut) {
+          if (price != null) mtm = lot.qty * lot.mult * price - lot.cost;
+        } else if (price != null) {
+          mtm = lot.qty * price;
+        } else {
+          mtm = lot.cost;
         }
-      } else if (price != null) {
-        holdingsValue += qty * price;
-      } else {
-        holdingsValue += cost;
+        holdingsValue += mtm;
+
+        // Cost anchor: brand-new lots at cost / 0 UPL; older lots still MTM
+        if (lot.openedKey === key) {
+          holdingsCostAnchored += lot.isFut ? 0 : lot.cost;
+        } else {
+          holdingsCostAnchored += mtm;
+        }
       }
     }
 
-    const totalValue = holdingsValue + cashBalance + Math.max(0, marginBlocked);
+    const mtmTotal = holdingsValue + cashBalance + Math.max(0, marginBlocked);
+    const costTotal =
+      holdingsCostAnchored + cashBalance + Math.max(0, marginBlocked);
+    const openedToday = [...lotsByTicker.values()].some((lots) =>
+      lots.some((l) => l.qty > 1e-9 && l.openedKey === key)
+    );
+    const isLast = ki === filteredKeys.length - 1;
+    const useCostAnchor = openedToday && !isLast;
+    const totalValue = useCostAnchor ? costTotal : mtmTotal;
 
     points.push({
       date: key,
       totalValue: Math.round(totalValue * 100) / 100,
       totalCostBasis: Math.round(netDeposits * 100) / 100,
-      holdingsValue: Math.round(holdingsValue * 100) / 100,
+      holdingsValue: Math.round(
+        (useCostAnchor ? holdingsCostAnchored : holdingsValue) * 100
+      ) / 100,
       cashBalance: Math.round(cashBalance * 100) / 100,
     });
+
+    if (openedToday) {
+      (
+        points[points.length - 1] as PerformancePoint & {
+          _costAnchor?: number;
+        }
+      )._costAnchor = Math.round(costTotal * 100) / 100;
+    }
   }
 
   const firstActive = points.findIndex(
     (p) => Math.abs(p.totalValue) > 1e-6 || (p.cashBalance ?? 0) !== 0
   );
-  const seriesPoints = firstActive >= 0 ? points.slice(firstActive) : [];
+  let seriesPoints = firstActive >= 0 ? points.slice(firstActive) : [];
   if (!seriesPoints.length) return empty(range);
+
+  // Single snapshot (e.g. only one session of data): prepend cost-anchor so
+  // profit ≠ 0 when mark has moved since entry.
+  if (seriesPoints.length === 1) {
+    const only = seriesPoints[0] as PerformancePoint & { _costAnchor?: number };
+    if (only._costAnchor != null && Math.abs(only._costAnchor - only.totalValue) > 1) {
+      seriesPoints = [
+        {
+          date: only.date,
+          totalValue: only._costAnchor,
+          totalCostBasis: only.totalCostBasis,
+          holdingsValue: only.holdingsValue,
+          cashBalance: only.cashBalance,
+        },
+        {
+          date: only.date,
+          totalValue: only.totalValue,
+          totalCostBasis: only.totalCostBasis,
+          holdingsValue: only.holdingsValue,
+          cashBalance: only.cashBalance,
+        },
+      ];
+    }
+  }
+
+  for (const p of seriesPoints) {
+    delete (p as PerformancePoint & { _costAnchor?: number })._costAnchor;
+  }
 
   const startValue = seriesPoints[0].totalValue;
   const endValue = seriesPoints[seriesPoints.length - 1].totalValue;
@@ -339,13 +463,26 @@ export async function buildOverallPerformance(
   }
 
   const change = endValue - startValue - netExternalFlow;
+
+  // Capital base for %: prefer deposits; else use cash deployed into buys
+  let deployed = 0;
+  for (const t of trades) {
+    if (t.action !== "BUY") continue;
+    if (isFuturesInstrument(t.instrumentType)) {
+      deployed += Math.max(0, t.margin ?? 0);
+    } else {
+      deployed += t.quantity * t.pricePerShare + (t.fees || 0);
+    }
+  }
   const capitalBase = Math.max(
     Math.abs(startValue + netExternalFlow),
     Math.abs(seriesPoints[seriesPoints.length - 1].totalCostBasis ?? 0),
+    Math.abs(netDeposits),
+    Math.abs(deployed),
     Math.abs(startValue)
   );
   const changePct =
-    capitalBase >= 1_000 ? (change / capitalBase) * 100 : 0;
+    capitalBase >= 1 ? (change / capitalBase) * 100 : 0;
 
   return {
     range,

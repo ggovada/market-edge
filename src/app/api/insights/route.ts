@@ -1,8 +1,17 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getMarketDataProvider } from "@/lib/market/yahoo";
-import { computeSupportResistance, summarizePriceAction } from "@/lib/technical/levels";
-import { narrateLevels } from "@/lib/ai/insights";
+import { getTickerNews } from "@/lib/market/news";
+import { getOutletSignals } from "@/lib/market/signals";
+import {
+  computeSupportResistance,
+  summarizePriceAction,
+} from "@/lib/technical/levels";
+import {
+  buildInsightBrief,
+  parseBrief,
+  serializeBrief,
+} from "@/lib/ai/insights";
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -26,13 +35,25 @@ export async function GET(req: Request) {
     cached &&
     Date.now() - cached.generatedAt.getTime() < maxAge
   ) {
+    const brief = parseBrief(cached.aiNarrative);
+    // Refresh news/signals even when levels are cached (they're more time-sensitive)
+    const [news, signals] = await Promise.all([
+      getTickerNews(ticker, 3).catch(() => brief?.news ?? []),
+      getOutletSignals(ticker, 5).catch(() => brief?.signals ?? []),
+    ]);
+    const levels = JSON.parse(cached.levels);
     return NextResponse.json({
       ticker,
       timeframe,
-      levels: JSON.parse(cached.levels),
+      levels,
+      bullets: brief?.bullets ?? [],
+      news,
+      signals,
       aiNarrative: cached.aiNarrative,
       generatedAt: cached.generatedAt,
       cached: true,
+      disclaimer:
+        "Informational only — not financial advice. Levels and ratings can be wrong or delayed.",
     });
   }
 
@@ -42,15 +63,24 @@ export async function GET(req: Request) {
     const period = timeframe === "WEEKLY" ? "3y" : "1y";
     const candles = await provider.getHistory(ticker, interval, period);
     const levels = computeSupportResistance(candles, {
-      window: timeframe === "WEEKLY" ? 3 : 5,
+      window: timeframe === "WEEKLY" ? 3 : 7,
     });
     const summary = summarizePriceAction(candles);
-    const aiNarrative = await narrateLevels({
+
+    const [news, signals] = await Promise.all([
+      getTickerNews(ticker, 3),
+      getOutletSignals(ticker, 5),
+    ]);
+
+    const brief = buildInsightBrief({
       ticker,
       timeframe,
       levels,
       summary,
+      news,
+      signals,
     });
+    const aiNarrative = serializeBrief(brief);
 
     const saved = await prisma.technicalInsight.upsert({
       where: { ticker_timeframe: { ticker, timeframe } },
@@ -72,20 +102,27 @@ export async function GET(req: Request) {
       ticker,
       timeframe,
       levels,
-      aiNarrative,
+      bullets: brief.bullets,
+      news: brief.news,
+      signals: brief.signals,
       summary,
+      aiNarrative,
       generatedAt: saved.generatedAt,
       cached: false,
       disclaimer:
-        "Informational technical analysis only — not financial advice.",
+        "Informational only — not financial advice. Levels and ratings can be wrong or delayed.",
     });
   } catch (e) {
     console.error(e);
     if (cached) {
+      const brief = parseBrief(cached.aiNarrative);
       return NextResponse.json({
         ticker,
         timeframe,
         levels: JSON.parse(cached.levels),
+        bullets: brief?.bullets ?? [],
+        news: brief?.news ?? [],
+        signals: brief?.signals ?? [],
         aiNarrative: cached.aiNarrative,
         generatedAt: cached.generatedAt,
         cached: true,
