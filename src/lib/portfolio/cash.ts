@@ -4,6 +4,7 @@ import {
   isFuturesInstrument,
 } from "@/lib/market/contract";
 import { normalizeTicker } from "@/lib/utils";
+import { sumRealizedPlAdjustments } from "@/lib/portfolio/realized-adjustments";
 
 export type CashTxnType = "DEPOSIT" | "WITHDRAWAL";
 
@@ -152,7 +153,11 @@ export async function getPortfolioCashBreakdown(portfolioId: string) {
 
   const { tradeCash, marginBlocked } = computeTradesCashImpact(trades);
   const netDeposits = deposits - withdrawals;
-  const cashBalance = netDeposits + tradeCash;
+  // Prior booked P&L still sitting in the account counts as free cash,
+  // but not as capital deposited (so Account P&L still includes it).
+  const booked = await sumRealizedPlAdjustments(portfolioId, "ALL");
+  const bookedPlRetained = booked.total;
+  const cashBalance = netDeposits + tradeCash + bookedPlRetained;
 
   return {
     deposits,
@@ -160,6 +165,7 @@ export async function getPortfolioCashBreakdown(portfolioId: string) {
     netDeposits,
     tradeCash,
     marginBlocked,
+    bookedPlRetained,
     cashBalance,
     transactions: cashTxns,
   };
