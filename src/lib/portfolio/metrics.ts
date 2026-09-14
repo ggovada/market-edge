@@ -7,6 +7,7 @@ import {
   isFuturesInstrument,
 } from "@/lib/market/contract";
 import { getPortfolioCashBreakdown } from "@/lib/portfolio/cash";
+import { sumRealizedPlAdjustments } from "@/lib/portfolio/realized-adjustments";
 
 export type PortfolioMetrics = {
   portfolioId: string;
@@ -20,14 +21,19 @@ export type PortfolioMetrics = {
   marginBlocked: number;
   /** Net money deposited (deposits − withdrawals) */
   netDeposits: number;
-  /** Holdings + free cash + blocked margin */
+  /**
+   * Prior booked P&L still counted in AUM (not also recorded as cash).
+   * Trade-realized P&L is already inside cash/holdings.
+   */
+  bookedPlRetained: number;
+  /** Holdings + free cash + blocked margin + booked P&L retained */
   currentValue: number;
   /** Alias kept for older UI: cost basis of holdings */
   totalInvested: number;
   unrealizedPl: number;
   unrealizedPlPct: number;
   realizedPl: number;
-  /** (holdings + cash) − net deposits */
+  /** AUM − net deposits (includes booked P&L retained) */
   totalPl: number;
   dayChange: number;
   dayChangePct: number;
@@ -42,6 +48,7 @@ export async function computePortfolioMetrics(
   const quotes = await getCachedQuotes(tickers);
   const quoteMap = new Map(quotes.map((q) => [q.ticker, q]));
   const cash = await getPortfolioCashBreakdown(portfolioId);
+  const booked = await sumRealizedPlAdjustments(portfolioId, "ALL");
 
   let holdingsCostBasis = 0;
   let holdingsValue = 0;
@@ -77,9 +84,14 @@ export async function computePortfolioMetrics(
   }
 
   const realized = await getRealizedSummary(portfolioId, "ALL");
-  // Free cash already had margin deducted on open; add it back into AUM
+  const bookedPlRetained = booked.total;
+  // Free cash already had margin deducted on open; add it back into AUM.
+  // Booked (pre-Market Edge) P&L is treated as retained account value.
   const currentValue =
-    holdingsValue + cash.cashBalance + cash.marginBlocked;
+    holdingsValue +
+    cash.cashBalance +
+    cash.marginBlocked +
+    bookedPlRetained;
   const totalPl = currentValue - cash.netDeposits;
   const priorHoldingsApprox = holdingsValue - dayChange;
   const dayChangePct =
@@ -94,6 +106,7 @@ export async function computePortfolioMetrics(
     cashBalance: cash.cashBalance,
     marginBlocked: cash.marginBlocked,
     netDeposits: cash.netDeposits,
+    bookedPlRetained,
     currentValue,
     totalInvested: holdingsCostBasis,
     unrealizedPl,

@@ -23,6 +23,7 @@ type PortfolioPayload = {
     cashBalance?: number;
     marginBlocked?: number;
     netDeposits?: number;
+    bookedPlRetained?: number;
     currentValue: number;
     unrealizedPl: number;
     unrealizedPlPct: number;
@@ -375,6 +376,7 @@ export default function PortfolioPage({
   const cashBalance = metrics.cashBalance ?? 0;
   const marginBlocked = metrics.marginBlocked ?? 0;
   const netDeposits = metrics.netDeposits ?? 0;
+  const bookedPlRetained = metrics.bookedPlRetained ?? 0;
 
   return (
     <div className="space-y-6">
@@ -475,8 +477,19 @@ export default function PortfolioPage({
             <p className="mt-1 text-xl font-semibold">
               <Money value={metrics.totalPl} signed />
             </p>
+            {bookedPlRetained !== 0 ? (
+              <p className="mt-1 text-sm text-muted">
+                Includes booked P&L {formatINR(bookedPlRetained)}
+              </p>
+            ) : null}
           </div>
         </div>
+        {bookedPlRetained !== 0 ? (
+          <p className="mt-4 text-base text-muted">
+            Account value includes prior booked P&L still in the account. Do not
+            also add the same amount as a Cash deposit, or it will be counted twice.
+          </p>
+        ) : null}
         {cashBalance < -1 ? (
           <p className="mt-4 text-base text-muted">
             Cash is negative because buys were funded without a recorded deposit.
@@ -903,10 +916,13 @@ export default function PortfolioPage({
             </h2>
             <p className="text-base text-muted">
               Use this for profits or losses already realized before you started
-              tracking in Market Edge. This updates realized P&L only — it does not
-              change cash or invent trades. Prefer{" "}
+              tracking in Market Edge. Amounts are included in{" "}
+              <strong className="font-semibold text-ink">account value</strong> and{" "}
+              <strong className="font-semibold text-ink">Account P&L</strong>, and in
+              Realized P&L. Prefer{" "}
               <strong className="font-semibold text-ink">Other</strong> for prior
-              history so it stays out of in-app tax estimates.
+              history so it stays out of in-app tax estimates. Do not also record the
+              same amount as a Cash deposit.
             </p>
             <div className="grid gap-4 md:grid-cols-2">
               <div>
