@@ -73,12 +73,36 @@ type PortfolioPayload = {
     stcg: { gainLoss: number };
     ltcg: { gainLoss: number };
     total: number;
+    fromTrades?: number;
+    adjustments?: {
+      count: number;
+      gainLoss: number;
+      other: number;
+      stcg: number;
+      ltcg: number;
+    };
   };
   realizedAllTime: {
     stcg: { gainLoss: number };
     ltcg: { gainLoss: number };
     total: number;
+    fromTrades?: number;
+    adjustments?: {
+      count: number;
+      gainLoss: number;
+      other: number;
+      stcg: number;
+      ltcg: number;
+    };
   };
+  realizedAdjustments?: {
+    id: string;
+    amount: number;
+    bookedAt: string;
+    label?: string | null;
+    term: string;
+    notes?: string | null;
+  }[];
   snapshots: { date: string; totalValue: number; totalCostBasis: number }[];
   trades: {
     id: string;
@@ -111,9 +135,9 @@ export default function PortfolioPage({
   const { id } = use(params);
   const router = useRouter();
   const [data, setData] = useState<PortfolioPayload | null>(null);
-  const [tab, setTab] = useState<"holdings" | "trades" | "lots" | "gains" | "cash">(
-    "holdings"
-  );
+  const [tab, setTab] = useState<
+    "holdings" | "trades" | "lots" | "gains" | "cash" | "booked"
+  >("holdings");
   const [tradeOpen, setTradeOpen] = useState(false);
   const [editTrade, setEditTrade] = useState<PortfolioPayload["trades"][0] | null>(null);
   const [lotTicker, setLotTicker] = useState<string | null>(null);
@@ -126,6 +150,16 @@ export default function PortfolioPage({
   const [cashType, setCashType] = useState<"DEPOSIT" | "WITHDRAWAL">("DEPOSIT");
   const [editCashId, setEditCashId] = useState<string | null>(null);
   const [cashSaving, setCashSaving] = useState(false);
+
+  const [bookedAmount, setBookedAmount] = useState("");
+  const [bookedDate, setBookedDate] = useState(
+    () => new Date().toISOString().slice(0, 10)
+  );
+  const [bookedLabel, setBookedLabel] = useState("");
+  const [bookedTerm, setBookedTerm] = useState<"OTHER" | "STCG" | "LTCG">("OTHER");
+  const [bookedNotes, setBookedNotes] = useState("");
+  const [editBookedId, setEditBookedId] = useState<string | null>(null);
+  const [bookedSaving, setBookedSaving] = useState(false);
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/portfolios/${id}`);
@@ -269,6 +303,71 @@ export default function PortfolioPage({
     load();
   }
 
+  function resetBookedForm() {
+    setEditBookedId(null);
+    setBookedAmount("");
+    setBookedDate(new Date().toISOString().slice(0, 10));
+    setBookedLabel("");
+    setBookedTerm("OTHER");
+    setBookedNotes("");
+  }
+
+  function startEditBooked(a: NonNullable<PortfolioPayload["realizedAdjustments"]>[0]) {
+    setEditBookedId(a.id);
+    setBookedAmount(String(a.amount));
+    setBookedDate(a.bookedAt.slice(0, 10));
+    setBookedLabel(a.label ?? "");
+    setBookedTerm(
+      a.term === "STCG" || a.term === "LTCG" ? a.term : "OTHER"
+    );
+    setBookedNotes(a.notes ?? "");
+    setTab("booked");
+    setShowTaxDetails(false);
+  }
+
+  async function submitBooked() {
+    const amount = Number(bookedAmount);
+    if (!Number.isFinite(amount) || amount === 0) {
+      alert("Enter a non-zero amount (negative for a loss).");
+      return;
+    }
+    setBookedSaving(true);
+    try {
+      const body = {
+        amount,
+        bookedAt: bookedDate,
+        label: bookedLabel || undefined,
+        term: bookedTerm,
+        notes: bookedNotes || undefined,
+      };
+      const res = await fetch(`/api/portfolios/${id}/realized-adjustments`, {
+        method: editBookedId ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          editBookedId ? { id: editBookedId, ...body } : body
+        ),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || "Could not save booked P&L");
+        return;
+      }
+      resetBookedForm();
+      await load();
+    } finally {
+      setBookedSaving(false);
+    }
+  }
+
+  async function removeBooked(adjId: string) {
+    if (!confirm("Remove this booked P&L entry?")) return;
+    await fetch(`/api/portfolios/${id}/realized-adjustments?id=${adjId}`, {
+      method: "DELETE",
+    });
+    if (editBookedId === adjId) resetBookedForm();
+    load();
+  }
+
   if (!data) return <div className="text-lg text-muted">Loading account…</div>;
 
   const { portfolio, metrics } = data;
@@ -346,13 +445,33 @@ export default function PortfolioPage({
             ) : null}
           </div>
           <div>
+            <p className="text-base text-muted">Unrealized P&L</p>
+            <p className="mt-1 text-xl font-semibold">
+              <Money value={metrics.unrealizedPl} signed />
+            </p>
+            <p className="mt-1 text-sm text-muted">
+              <Pct value={metrics.unrealizedPlPct} /> on open positions
+            </p>
+          </div>
+          <div>
+            <p className="text-base text-muted">Realized P&L</p>
+            <p className="mt-1 text-xl font-semibold">
+              <Money value={metrics.realizedPl} signed />
+            </p>
+            <p className="mt-1 text-sm text-muted">
+              Closed trades + booked history
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div>
             <p className="text-base text-muted">Money put in</p>
             <p className="mt-1 text-xl font-semibold">
               {formatINR(netDeposits > 0 ? netDeposits : metrics.totalInvested)}
             </p>
           </div>
           <div>
-            <p className="text-base text-muted">Profit or loss</p>
+            <p className="text-base text-muted">Account P&L (AUM − money in)</p>
             <p className="mt-1 text-xl font-semibold">
               <Money value={metrics.totalPl} signed />
             </p>
@@ -371,6 +490,7 @@ export default function PortfolioPage({
           [
             { id: "holdings" as const, label: "Open positions" },
             { id: "cash" as const, label: "Cash" },
+            { id: "booked" as const, label: "Booked P&L" },
             { id: "trades" as const, label: "Trade history" },
           ] as const
         ).map((t) => (
@@ -772,6 +892,173 @@ export default function PortfolioPage({
               ))}
             </tbody>
           </table>
+        </div>
+      ) : null}
+
+      {tab === "booked" ? (
+        <div className="space-y-5">
+          <div className="card space-y-4 p-5">
+            <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
+              {editBookedId ? "Edit booked P&L" : "Record booked P&L"}
+            </h2>
+            <p className="text-base text-muted">
+              Use this for profits or losses already realized before you started
+              tracking in Market Edge. This updates realized P&L only — it does not
+              change cash or invent trades. Prefer{" "}
+              <strong className="font-semibold text-ink">Other</strong> for prior
+              history so it stays out of in-app tax estimates.
+            </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="label" htmlFor="booked-amount">
+                  Amount (negative = loss)
+                </label>
+                <input
+                  id="booked-amount"
+                  className="input"
+                  type="number"
+                  step="any"
+                  inputMode="decimal"
+                  value={bookedAmount}
+                  onChange={(e) => setBookedAmount(e.target.value)}
+                  placeholder="250000"
+                />
+              </div>
+              <div>
+                <label className="label" htmlFor="booked-date">
+                  Booked on
+                </label>
+                <input
+                  id="booked-date"
+                  className="input"
+                  type="date"
+                  value={bookedDate}
+                  onChange={(e) => setBookedDate(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="label" htmlFor="booked-label">
+                  Label (optional)
+                </label>
+                <input
+                  id="booked-label"
+                  className="input"
+                  value={bookedLabel}
+                  onChange={(e) => setBookedLabel(e.target.value)}
+                  placeholder="Prior FY / broker total"
+                />
+              </div>
+              <div>
+                <label className="label" htmlFor="booked-term">
+                  Classification
+                </label>
+                <select
+                  id="booked-term"
+                  className="select"
+                  value={bookedTerm}
+                  onChange={(e) =>
+                    setBookedTerm(e.target.value as "OTHER" | "STCG" | "LTCG")
+                  }
+                >
+                  <option value="OTHER">Other (performance only)</option>
+                  <option value="STCG">Short-term</option>
+                  <option value="LTCG">Long-term</option>
+                </select>
+              </div>
+              <div className="md:col-span-2">
+                <label className="label" htmlFor="booked-notes">
+                  Notes (optional)
+                </label>
+                <input
+                  id="booked-notes"
+                  className="input"
+                  value={bookedNotes}
+                  onChange={(e) => setBookedNotes(e.target.value)}
+                  placeholder="Booked before Market Edge"
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={bookedSaving}
+                onClick={submitBooked}
+              >
+                {bookedSaving
+                  ? "Saving…"
+                  : editBookedId
+                    ? "Save changes"
+                    : "Add booked P&L"}
+              </button>
+              {editBookedId ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  disabled={bookedSaving}
+                  onClick={resetBookedForm}
+                >
+                  Cancel
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="card table-wrap">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>Booked</th>
+                  <th>Label</th>
+                  <th>Class</th>
+                  <th>Amount</th>
+                  <th>Notes</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody>
+                {(data.realizedAdjustments ?? []).length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="text-muted">
+                      No booked P&L yet. Add prior profits here.
+                    </td>
+                  </tr>
+                ) : (
+                  (data.realizedAdjustments ?? []).map((a) => (
+                    <tr key={a.id}>
+                      <td>{new Date(a.bookedAt).toLocaleDateString("en-IN")}</td>
+                      <td className="font-medium">{a.label || "—"}</td>
+                      <td>{a.term}</td>
+                      <td>
+                        <Money value={a.amount} signed />
+                      </td>
+                      <td className="text-muted">{a.notes || "—"}</td>
+                      <td>
+                        <div className="flex gap-1">
+                          <button
+                            type="button"
+                            className="btn btn-ghost !px-2"
+                            onClick={() => startEditBooked(a)}
+                            aria-label="Edit"
+                          >
+                            <Pencil size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost !px-2"
+                            onClick={() => removeBooked(a.id)}
+                            aria-label="Remove"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       ) : null}
 

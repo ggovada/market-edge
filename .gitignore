@@ -55,3 +55,4 @@ public/workbox-*.js.map
 # Local SQLite
 prisma/*.db
 prisma/*.db-journal
+.env*.local

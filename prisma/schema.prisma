@@ -32,6 +32,7 @@ model Portfolio {
   valueSnapshots  PortfolioValueSnapshot[]
   tradeAudits     TradeAuditLog[]
   cashTransactions CashTransaction[]
+  realizedPlAdjustments RealizedPlAdjustment[]
 }
 
 model CashTransaction {
@@ -47,6 +48,30 @@ model CashTransaction {
   createdAt   DateTime  @default(now())
 
   @@index([portfolioId, executedAt])
+}
+
+/**
+ * Opening / manual booked P&L (e.g. profits realized before Market Edge).
+ * Counts toward realized P&L display only — does not change cash or invent trades.
+ * Excluded from in-app tax estimates by default.
+ */
+model RealizedPlAdjustment {
+  id          String    @id @default(cuid())
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+  /** Signed: profit > 0, loss < 0 */
+  amount      Float
+  /** When the P&L was booked (broker / prior system) */
+  bookedAt    DateTime
+  /** Optional label, e.g. ticker or "PRIOR" */
+  label       String?
+  /** STCG | LTCG | OTHER — OTHER is performance-only */
+  term        String    @default("OTHER")
+  notes       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([portfolioId, bookedAt])
 }
 
 model Trade {

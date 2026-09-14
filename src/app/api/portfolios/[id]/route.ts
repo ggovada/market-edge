@@ -5,6 +5,7 @@ import { computePortfolioMetrics } from "@/lib/portfolio/metrics";
 import { getCachedQuotes } from "@/lib/market/quotes";
 import { holdingBookValue, notionalValue } from "@/lib/market/contract";
 import { getPortfolioCashBreakdown } from "@/lib/portfolio/cash";
+import { listRealizedPlAdjustments } from "@/lib/portfolio/realized-adjustments";
 
 type Ctx = { params: Promise<{ id: string }> };
 
@@ -91,6 +92,8 @@ export async function GET(_req: Request, ctx: Ctx) {
       take: 100,
     });
 
+    const realizedAdjustments = await listRealizedPlAdjustments(id);
+
     return NextResponse.json({
       portfolio,
       metrics,
@@ -98,6 +101,7 @@ export async function GET(_req: Request, ctx: Ctx) {
       holdings: holdingsDetailed,
       realized,
       realizedAllTime,
+      realizedAdjustments,
       ltcgExemption: ltcg,
       taxSettings: tax,
       snapshots,

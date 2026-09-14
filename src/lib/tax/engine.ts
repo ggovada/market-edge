@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { contractMultiplier } from "@/lib/market/contract";
+import { sumRealizedPlAdjustments } from "@/lib/portfolio/realized-adjustments";
 import { daysBetween, getFinancialYear, normalizeTicker } from "@/lib/utils";
 
 export type TaxConfig = {
@@ -352,18 +353,36 @@ export async function getRealizedSummary(
       ...(fy === "ALL" ? {} : { financialYear: fy }),
     },
   });
+
+  const adjustments = await sumRealizedPlAdjustments(portfolioId, fy);
+
   const stcg = gains.filter((g) => g.term === "STCG");
   const ltcg = gains.filter((g) => g.term === "LTCG");
+  const fromTrades = gains.reduce((s, g) => s + g.gainLoss, 0);
+  const stcgTrades = stcg.reduce((s, g) => s + g.gainLoss, 0);
+  const ltcgTrades = ltcg.reduce((s, g) => s + g.gainLoss, 0);
+
   return {
     financialYear: fy,
     stcg: {
       count: stcg.length,
-      gainLoss: stcg.reduce((s, g) => s + g.gainLoss, 0),
+      /** From closed trades only (used for tax display) */
+      gainLoss: stcgTrades,
     },
     ltcg: {
       count: ltcg.length,
-      gainLoss: ltcg.reduce((s, g) => s + g.gainLoss, 0),
+      /** From closed trades only (used for tax display) */
+      gainLoss: ltcgTrades,
     },
-    total: gains.reduce((s, g) => s + g.gainLoss, 0),
+    /** Performance-only booked P&L (opening balances, etc.) — not used in tax estimates */
+    adjustments: {
+      count: adjustments.count,
+      gainLoss: adjustments.total,
+      other: adjustments.other,
+      stcg: adjustments.stcg,
+      ltcg: adjustments.ltcg,
+    },
+    fromTrades,
+    total: fromTrades + adjustments.total,
   };
 }
